@@ -1,0 +1,6 @@
+# Digital Twin Level 4 — Backend Dependencies
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+websockets>=12.0
+scipy>=1.11.0
+numpy>=1.24.0
