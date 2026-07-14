@@ -1,0 +1,55 @@
+# =========================
+# OS & IDE
+# =========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# Python / Backend
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+venv/
+.venv/
+env/
+.env
+*.egg-info/
+dist/
+build/
+
+# =========================
+# Godot / Digital Twins UI
+# =========================
+.godot/
+/android/
+*.import
+
+# Heavy Web / Desktop / Mobile Export Builds
+*.wasm
+*.pck
+*.apk
+*.aab
+*.exe
+*.zip
+digital_twins.html
+digital_twins.js
+digital_twins.audio.*
+digital_twins.apple-touch-icon.*
+digital_twins.icon.*
+digital_twins.png*
+digital_twins.*.import
