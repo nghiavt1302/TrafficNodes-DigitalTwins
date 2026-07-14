@@ -1,24 +1,20 @@
 """
-core/optimizer.py — Bộ tối ưu AI What-If với scipy.optimize
+core/optimizer.py — Bộ tối ưu AI What-If (4 pha NEMA, PCE)
 =============================================================
-Hàm mục tiêu What-If Predictive (4 hướng):
+Hàm mục tiêu What-If Predictive (4 pha NEMA Leading Left Turn):
 
-    J(u) = Σ_i  w_i × (d_i^residual)²  +  λ × Σ_i (Δu_i / S)²
+    J(u) = Σ_p  w_p × Σ_{i∈p} (d_i^residual)²  +  λ × Σ_p (Δu_p / S)²
 
-Trong đó d_i^residual mô phỏng vật lý đúng:
-    - Xe đến LIÊN TỤC trong toàn bộ chu kỳ T (cả xanh lẫn đỏ)
-    - Xe giải tỏa chỉ trong thời gian xanh u_i (Saturation Flow)
-    - arrival_rate CÓ hệ số giờ M(h) — phân biệt cao điểm/thấp điểm
-
-Bộ tối ưu sử dụng scipy.optimize.minimize (method=Powell):
-    - Tìm nghiệm LIÊN TỤC tối ưu thực sự
-    - Không bị giới hạn bởi kịch bản cố định
-    - Ràng buộc: MIN_GREEN ≤ u_i ≤ MAX_GREEN
+Nâng cấp v5.0:
+  - 4 biến tối ưu (u_PH1, u_PH2, u_PH3, u_PH4) thay vì 2
+  - PCE cho arrival rates
+  - Left-turn saturation factor
+  - Min/max green riêng cho thẳng vs rẽ trái
 
 Tham chiếu:
-    - LQR (Linear-Quadratic Regulator) cost function
-    - HCM Saturation Flow Model
-    - Powell's conjugate direction method (gradient-free)
+  - LQR cost function
+  - HCM Saturation Flow Model
+  - Nelder-Mead simplex method
 """
 
 from dataclasses import dataclass
@@ -29,27 +25,33 @@ from config import (
     ALPHA,
     LAMBDA,
     S_NORMALIZE,
-    DIRECTION_WEIGHTS,
+    PHASE_WEIGHTS,
+    PHASES,
+    PHASE_IDS,
     DIRECTIONS,
     SATURATION_FLOW_RATE,
-    QUEUE_CAPACITY,
+    LEFT_TURN_SATURATION_FACTOR,
+    STARTUP_LOST_TIME,
     ARRIVAL_RATE_SCALE,
     BASE_DENSITY,
     YELLOW_DURATION,
     ALL_RED_DURATION,
     MIN_GREEN_TIME,
+    MIN_GREEN_TIME_THROUGH,
     MAX_GREEN_TIME,
+    MAX_GREEN_TIME_LEFT,
+    WEIGHTED_PCE,
 )
-from core.generator import get_hour_multiplier
+from core.utils import get_hour_multiplier, get_queue_capacity
 
 
 @dataclass
 class OptimizationResult:
-    """Kết quả tối ưu — chứa kịch bản tốt nhất cho 4 hướng."""
-    green_times: dict[str, int]   # Thời gian đèn xanh tối ưu cho 4 hướng
-    best_cost: float              # Giá trị J(u) nhỏ nhất
-    current_cost: float           # Giá trị J(u) của chu kỳ hiện tại
-    improvement: float            # % cải thiện so với hiện tại
+    """Kết quả tối ưu — 4 pha."""
+    green_times: dict[str, int]
+    best_cost: float
+    current_cost: float
+    improvement: float
 
 
 def compute_effective_density(
@@ -57,15 +59,7 @@ def compute_effective_density(
     forecast_values: dict[str, float],
     alpha: float = ALPHA,
 ) -> dict[str, float]:
-    """
-    Tính mật độ hiệu dụng d_i^eff cho từng hướng.
-
-    Công thức:
-        d_i^eff = α × d_i^current + (1 − α) × V_i^forecast
-
-    Kết hợp mật độ thực đo (nặng α=85%) với dự báo Kalman (15%)
-    để giảm ảnh hưởng nhiễu đo lường.
-    """
+    """d_eff = α × d_current + (1 − α) × V_forecast."""
     d_eff: dict[str, float] = {}
     for direction in DIRECTIONS:
         d_current = current_densities.get(direction, 0.0)
@@ -74,73 +68,83 @@ def compute_effective_density(
     return d_eff
 
 
+def _get_phase_directions(phase_id: str) -> list[str]:
+    for phase in PHASES:
+        if phase["id"] == phase_id:
+            return phase["directions"]
+    return []
+
+
+def _get_phase_type(phase_id: str) -> str:
+    for phase in PHASES:
+        if phase["id"] == phase_id:
+            return phase.get("type", "THROUGH")
+    return "THROUGH"
+
+
+def _get_min_green(phase_id: str) -> int:
+    """Min green phụ thuộc loại pha."""
+    return MIN_GREEN_TIME if _get_phase_type(phase_id) == "LEFT" else MIN_GREEN_TIME_THROUGH
+
+
+def _get_max_green(phase_id: str) -> int:
+    """Max green phụ thuộc loại pha."""
+    return MAX_GREEN_TIME_LEFT if _get_phase_type(phase_id) == "LEFT" else MAX_GREEN_TIME
+
+
 def compute_cost_j(
     effective_densities: dict[str, float],
     candidate: dict[str, int | float],
     current_plan: dict[str, int],
     hour: int,
-    weights: dict[str, float] = DIRECTION_WEIGHTS,
+    weights: dict[str, float] = PHASE_WEIGHTS,
     lam: float = LAMBDA,
     s: float = S_NORMALIZE,
 ) -> float:
     """
-    Hàm mục tiêu J(u) theo mô hình WHAT-IF PREDICTIVE đúng vật lý.
+    Hàm mục tiêu J(u) — 4 pha NEMA, có PCE.
 
-    Mô phỏng mật độ tồn đọng dự kiến sau khi chạy kịch bản ứng viên:
-
-        T_cycle = Σ u_i + N_phases × (yellow + all_red)
-        red_time_i = T_cycle - u_i - yellow - all_red
-
-        arrival_total_i = arrival_rate(i, h) × T_cycle     ← XE ĐẾN CẢ CHU KỲ
-        clearance_total_i = s_per_sec × min(1, d_eff/0.3) × u_i  ← CHỈ KHI XANH
-
-        d_residual_i = max(0, d_eff_i + arrival_total_i - clearance_total_i)
-
-        J(u) = Σ w_i × d_residual_i² + λ × Σ (Δu_i / S)²
+    CONSISTENT với generator/physical_twin.
     """
-    n_phases = len(DIRECTIONS)
+    n_phases = len(PHASE_IDS)
     transition_time = YELLOW_DURATION + ALL_RED_DURATION
-
-    # Hệ số giờ M(h)
     m_h = get_hour_multiplier(hour)
 
-    # Saturation flow per second (đơn vị mật độ)
-    s_per_sec = SATURATION_FLOW_RATE / 3600.0 / QUEUE_CAPACITY
+    total_cycle = sum(float(candidate.get(p, 30)) for p in PHASE_IDS) + n_phases * transition_time
 
-    # ── Phần 1: Σ w_i × (d_residual_i)² ──
     density_cost = 0.0
-    for direction in DIRECTIONS:
-        w_i = weights.get(direction, 1.0)
-        d_eff = effective_densities.get(direction, 0.0)
-        u_i = float(candidate.get(direction, 40))
+    for phase_id in PHASE_IDS:
+        w_p = weights.get(phase_id, 1.0)
+        u_p = float(candidate.get(phase_id, 30))
+        directions = _get_phase_directions(phase_id)
+        is_left = _get_phase_type(phase_id) == "LEFT"
 
-        # Tốc độ xe đến mỗi giây (có hệ số giờ M(h))
-        arrival_per_sec = BASE_DENSITY.get(direction, 0.3) * m_h * ARRIVAL_RATE_SCALE
+        for direction in directions:
+            d_eff = effective_densities.get(direction, 0.0)
+            capacity = get_queue_capacity(direction)
 
-        # ═══ KEY INSIGHT: Thời gian đỏ của hướng i = thời gian XANH CỦA CÁC HƯỚNG KHÁC ═══
-        # Khi hướng i đang đỏ, lý do là vì hướng khác đang xanh/vàng/toàn đỏ
-        # → red_time_i = Σ_{j≠i} u_j + (N-1) × (yellow + all_red)
-        # Đây là liên kết đúng: tăng xanh hướng khác = tăng đỏ hướng i
-        other_green = sum(
-            float(candidate.get(d, 40)) for d in DIRECTIONS if d != direction
-        )
-        red_time_i = other_green + (n_phases - 1) * transition_time
+            # Arrival (có PCE)
+            arrival_per_sec = BASE_DENSITY.get(direction, 0.1) * m_h * ARRIVAL_RATE_SCALE * WEIGHTED_PCE
+            arrival_total = arrival_per_sec * total_cycle
 
-        # Trong thời gian XANH u_i: giải tỏa hàng chờ ở saturation flow
-        queue_cleared = s_per_sec * u_i
+            # Clearance (có left-turn factor)
+            s_per_sec = SATURATION_FLOW_RATE / 3600.0 / capacity
+            if is_left:
+                s_per_sec *= LEFT_TURN_SATURATION_FACTOR
 
-        # Trong thời gian ĐỎ: xe tích tụ liên tục
-        queue_growth = arrival_per_sec * red_time_i
+            utilization = min(1.0, d_eff / 0.3)
+            clearance_rate = s_per_sec * utilization
 
-        # Mật độ tồn đọng sau chu kỳ
-        d_residual = max(0.0, d_eff - queue_cleared + queue_growth)
+            effective_green = max(0.0, u_p - STARTUP_LOST_TIME * 0.5)
+            clearance_total = clearance_rate * effective_green
 
-        density_cost += w_i * (d_residual ** 2)
+            d_residual = max(0.0, d_eff + arrival_total - clearance_total)
+            density_cost += w_p * (d_residual ** 2)
 
-    # ── Phần 2: λ × Σ (Δu_i / S)² — Phạt thay đổi đèn ──
+    # Switching cost
     control_cost = 0.0
-    for direction in DIRECTIONS:
-        delta_u = float(candidate.get(direction, 40)) - float(current_plan.get(direction, 40))
+    for phase_id in PHASE_IDS:
+        delta_u = float(candidate.get(phase_id, 30)) - float(current_plan.get(phase_id, 30))
         control_cost += (delta_u / s) ** 2
     control_cost *= lam
 
@@ -151,19 +155,24 @@ def _proportional_allocation(
     effective_densities: dict[str, float],
     total_green_budget: float,
 ) -> list[float]:
-    """
-    Tính phân bổ xanh tỷ lệ thuận với mật độ hiệu dụng.
-    Hướng kẹt hơn → được phân nhiều xanh hơn.
-    """
-    total_d = sum(effective_densities.get(d, 0.01) for d in DIRECTIONS)
-    if total_d < 0.01:
-        # Nếu tất cả mật độ ~ 0, phân đều
-        return [total_green_budget / len(DIRECTIONS)] * len(DIRECTIONS)
+    """Phân bổ xanh tỷ lệ thuận với demand mỗi pha."""
+    phase_demands: list[float] = []
+    for phase_id in PHASE_IDS:
+        directions = _get_phase_directions(phase_id)
+        demand = sum(effective_densities.get(d, 0.01) for d in directions)
+        phase_demands.append(demand)
+
+    total_demand = sum(phase_demands)
+    if total_demand < 0.01:
+        return [total_green_budget / len(PHASE_IDS)] * len(PHASE_IDS)
 
     alloc = []
-    for d in DIRECTIONS:
-        share = effective_densities.get(d, 0.01) / total_d
-        g = max(float(MIN_GREEN_TIME), min(float(MAX_GREEN_TIME), share * total_green_budget))
+    for i, demand in enumerate(phase_demands):
+        pid = PHASE_IDS[i]
+        share = demand / total_demand
+        lo = float(_get_min_green(pid))
+        hi = float(_get_max_green(pid))
+        g = max(lo, min(hi, share * total_green_budget))
         alloc.append(g)
     return alloc
 
@@ -175,49 +184,34 @@ def optimize(
     hour: int = 12,
 ) -> OptimizationResult:
     """
-    Tìm phân bổ thời gian đèn xanh tối ưu bằng scipy.optimize.minimize.
+    Tìm phân bổ thời gian xanh tối ưu cho 4 pha (4 biến).
 
-    Chiến lược multi-start:
-      1. x0_current: xuất phát từ chu kỳ hiện tại
-      2. x0_proportional: phân bổ tỷ lệ thuận với mật độ
-      3. x0_aggressive: ưu tiên hướng kẹt nhất
-
-    Chọn nghiệm tốt nhất từ 3 starting points → tránh local minima.
-
-    Method: Nelder-Mead (simplex) — robust, không cần gradient,
-    hoạt động tốt với hàm có max() và bounds.
+    Multi-start Nelder-Mead (3 starting points).
     """
-    # Bước 1: Tính mật độ hiệu dụng
     d_eff = compute_effective_density(current_densities, forecast_values)
-
-    # Bước 2: Tính J(u) cho chu kỳ hiện tại (baseline)
     j_current = compute_cost_j(d_eff, current_green_times, current_green_times, hour)
 
-    # Hàm objective
-    bounds_lo = float(MIN_GREEN_TIME)
-    bounds_hi = float(MAX_GREEN_TIME)
+    # Bounds cho từng pha (rẽ trái vs thẳng khác nhau)
+    bounds_info = [(float(_get_min_green(p)), float(_get_max_green(p))) for p in PHASE_IDS]
 
     def objective(u_vec):
         cand = {}
-        for i, d in enumerate(DIRECTIONS):
-            cand[d] = max(bounds_lo, min(bounds_hi, u_vec[i]))
+        for i, p in enumerate(PHASE_IDS):
+            lo, hi = bounds_info[i]
+            cand[p] = max(lo, min(hi, u_vec[i]))
         return compute_cost_j(d_eff, cand, current_green_times, hour)
 
-    # ── Multi-start: 3 điểm khởi đầu ──
-    total_budget = sum(current_green_times[d] for d in DIRECTIONS)
+    # Multi-start: 3 starting points
+    total_budget = sum(current_green_times.get(p, 25) for p in PHASE_IDS)
 
     starting_points = [
-        # 1. Chu kỳ hiện tại
-        [float(current_green_times[d]) for d in DIRECTIONS],
-        # 2. Phân bổ tỷ lệ thuận với mật độ
+        [float(current_green_times.get(p, 25)) for p in PHASE_IDS],
         _proportional_allocation(d_eff, total_budget),
-        # 3. Ưu tiên hướng kẹt nhất (double green budget)
         _proportional_allocation(d_eff, total_budget * 1.3),
     ]
 
-    best_result = None
     best_cost = j_current
-    best_x = [float(current_green_times[d]) for d in DIRECTIONS]
+    best_x = [float(current_green_times.get(p, 25)) for p in PHASE_IDS]
 
     for x0 in starting_points:
         try:
@@ -225,7 +219,7 @@ def optimize(
                 objective,
                 x0=x0,
                 method="Nelder-Mead",
-                options={"maxiter": 300, "xatol": 0.5, "fatol": 1e-6},
+                options={"maxiter": 500, "xatol": 0.5, "fatol": 1e-6},
             )
             if result.fun < best_cost:
                 best_cost = result.fun
@@ -233,12 +227,12 @@ def optimize(
         except Exception:
             continue
 
-    # Chuyển kết quả về dict[str, int] (làm tròn + clamp)
+    # Convert result
     best_candidate: dict[str, int] = {}
-    for i, d in enumerate(DIRECTIONS):
-        best_candidate[d] = int(round(max(MIN_GREEN_TIME, min(MAX_GREEN_TIME, best_x[i]))))
+    for i, p in enumerate(PHASE_IDS):
+        lo, hi = bounds_info[i]
+        best_candidate[p] = int(round(max(lo, min(hi, best_x[i]))))
 
-    # Bước 4: Tính % cải thiện
     if j_current > 1e-9:
         improvement = ((j_current - best_cost) / j_current) * 100.0
     else:
@@ -250,4 +244,3 @@ def optimize(
         current_cost=round(j_current, 6),
         improvement=round(max(0.0, improvement), 1),
     )
-

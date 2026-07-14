@@ -1,6 +1,10 @@
-# Digital Twin Level 4 — Backend Dependencies
+# Digital Twin Level 4 Pro — Backend Dependencies
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 websockets>=12.0
 scipy>=1.11.0
 numpy>=1.24.0
+pytest>=8.0.0
+eclipse-sumo>=1.20.0
+traci>=1.20.0
+sumolib>=1.20.0

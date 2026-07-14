@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<connections>
+    <connection from="north_in" to="south_out" fromLane="1" toLane="1"/>
+    <connection from="north_in" to="south_out" fromLane="2" toLane="2"/>
+    <connection from="north_in" to="west_out" fromLane="0" toLane="1"/>
+    <connection from="north_in" to="east_out" fromLane="2" toLane="1"/>
+
+    <connection from="south_in" to="north_out" fromLane="1" toLane="1"/>
+    <connection from="south_in" to="north_out" fromLane="2" toLane="2"/>
+    <connection from="south_in" to="east_out" fromLane="0" toLane="1"/>
+    <connection from="south_in" to="west_out" fromLane="2" toLane="1"/>
+
+    <connection from="east_in" to="west_out" fromLane="1" toLane="1"/>
+    <connection from="east_in" to="west_out" fromLane="2" toLane="2"/>
+    <connection from="east_in" to="south_out" fromLane="0" toLane="1"/>
+    <connection from="east_in" to="north_out" fromLane="2" toLane="1"/>
+
+    <connection from="west_in" to="east_out" fromLane="1" toLane="1"/>
+    <connection from="west_in" to="east_out" fromLane="2" toLane="2"/>
+    <connection from="west_in" to="north_out" fromLane="0" toLane="1"/>
+    <connection from="west_in" to="south_out" fromLane="2" toLane="1"/>
+</connections>

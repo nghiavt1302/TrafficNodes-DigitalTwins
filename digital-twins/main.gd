@@ -1,366 +1,680 @@
-extends Node2D
+extends Node3D
 
-# --- Định nghĩa hằng số hệ thống ---
-const LANE_WIDTH = 50.0  # Độ rộng mỗi làn xe
-const INSTERSECTION_COLOR = Color(0.18, 0.18, 0.18)
+## ╔══════════════════════════════════════════════════════════════╗
+## ║  DIGITAL TWIN LEVEL 4 PRO — 3D VISUALIZATION               ║
+## ║  Godot 4.7 — CSG Primitives + CanvasLayer Dashboard         ║
+## ╚══════════════════════════════════════════════════════════════╝
 
-# --- Bảng ánh xạ tên hướng: mã ngắn → tên hướng tiếp cận bản đồ ---
-const DIR_NAMES = {
-	"NS": "Bắc-Nam",
-	"EW": "Đông-Tây",
-	"SN": "Nam-Bắc",
-	"WE": "Tây-Đông"
+# --- Constants ---
+const ROAD_WIDTH := 15.0       # Chiều rộng đường (3 làn × 5m)
+const ROAD_LENGTH := 120.0     # Chiều dài mỗi nhánh
+const LANE_WIDTH := 5.0        # Chiều rộng 1 làn
+const INTERSECTION_SIZE := 15.0
+const ROAD_Y := 0.05           # Cao hơn mặt đất 1 chút
+
+const DIR_NAMES := {
+	"NS": "Bắc-Nam", "NS_LEFT": "B-N rẽ trái",
+	"EW": "Đông-Tây", "EW_LEFT": "Đ-T rẽ trái",
+	"SN": "Nam-Bắc", "SN_LEFT": "N-B rẽ trái",
+	"WE": "Tây-Đông", "WE_LEFT": "T-Đ rẽ trái",
 }
 
-# --- Lưu trữ Trạng thái Digital Twin ---
-var traffic_data = {
-	"NS": {"density": 0.0, "time_left": 0.0, "light": "DO"},
-	"EW": {"density": 0.0, "time_left": 0.0, "light": "DO"},
-	"SN": {"density": 0.0, "time_left": 0.0, "light": "DO"},
-	"WE": {"density": 0.0, "time_left": 0.0, "light": "DO"},
-	"kpis": {"throughput": 0.0, "avgWait": 0.0, "efficiency": 0.0},
-	"ai_decision": {"green_times": {"NS": 45, "EW": 40, "SN": 40, "WE": 35}, "improvement": 0.0}
+const PHASE_NAMES := {
+	"PH1": "Rẽ trái B-N",
+	"PH2": "Thẳng B-N",
+	"PH3": "Rẽ trái Đ-T",
+	"PH4": "Thẳng Đ-T",
 }
 
-var labels = {}
-var center_point = Vector2.ZERO
-var screen_size = Vector2.ZERO
-var sim_width = 0.0
-var _default_font: Font   # Font hệ thống để vẽ chữ lên canvas
+const THROUGH_DIRS := ["NS", "EW", "SN", "WE"]
+const ALL_DIRS := ["NS", "NS_LEFT", "EW", "EW_LEFT", "SN", "SN_LEFT", "WE", "WE_LEFT"]
+
+# --- State ---
+var traffic_data := {}
+var _vehicle_nodes: Dictionary = {}  # {dir: [Node3D]}
+var _traffic_light_meshes: Dictionary = {}  # {dir: MeshInstance3D}
+var _labels: Dictionary = {}
+var _road_materials: Dictionary = {}
 
 func _ready():
-	screen_size = get_viewport_rect().size
-	# Chia màn hình 50/50. Khu vực mô phỏng chiếm 50% bên trái
-	sim_width = screen_size.x * 0.5
-	# Tâm của ngã tư sẽ nằm ở chính giữa của nửa bên trái (25% toàn màn hình)
-	center_point = Vector2(sim_width * 0.5, screen_size.y * 0.5)
+	_init_traffic_data()
+	_build_ground()
+	_build_roads()
+	_build_intersection()
+	_build_traffic_lights()
+	_build_dashboard()
 	
-	# Lấy font mặc định từ theme để dùng trong _draw()
-	_default_font = ThemeDB.fallback_font
-	
-	_dunk_dashboard_panel()
+	for dir_key in ALL_DIRS:
+		_vehicle_nodes[dir_key] = []
 
-func _process(_delta):
-	queue_redraw()
+func _init_traffic_data():
+	for d in ALL_DIRS:
+		traffic_data[d] = {"density": 0.0, "time_left": 0.0, "light": "DO"}
+	traffic_data["kpis"] = {"throughput": 0.0, "avgWait": 0.0, "efficiency": 0.0}
+	traffic_data["ai_decision"] = {"green_times": {"PH1": 15, "PH2": 35, "PH3": 12, "PH4": 30}, "improvement": 0.0}
+	traffic_data["ground_truth"] = {}
+	traffic_data["queue_counts"] = {}
+	traffic_data["fidelity"] = 0.0
+	traffic_data["velocity"] = {}
+	traffic_data["sim_clock"] = {"time_str": "07:30:00", "speed": 1.0, "day": 1}
+	traffic_data["auto_apply"] = true
+	for d in ALL_DIRS:
+		traffic_data["ground_truth"][d] = 0.0
+		traffic_data["queue_counts"][d] = 0
+		traffic_data["velocity"][d] = 0.0
+
+func _process(_delta: float):
+	_update_vehicles()
+	_update_traffic_light_colors()
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║  HÀM VẼ ĐỒ HỌA NGÃ TƯ (Thu gọn trong 50% màn hình)       ║
+# ║  XÂY DỰNG MÔI TRƯỜNG 3D                                    ║
 # ╚══════════════════════════════════════════════════════════════╝
-func _draw():
-	# 1. Vẽ nền cỏ
-	draw_rect(Rect2(Vector2.ZERO, screen_size), Color(0.1, 0.14, 0.1))
+
+func _build_ground():
+	var ground := CSGBox3D.new()
+	ground.name = "Ground"
+	ground.size = Vector3(300, 0.1, 300)
+	ground.position = Vector3(0, -0.05, 0)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.08, 0.12, 0.06)
+	ground.material = mat
+	add_child(ground)
+
+func _build_roads():
+	var road_mat := StandardMaterial3D.new()
+	road_mat.albedo_color = Color(0.18, 0.18, 0.2)
+	_road_materials["road"] = road_mat
 	
-	# 2. Vẽ nền trục đường chính
-	var horizontal_road = Rect2(0, center_point.y - LANE_WIDTH * 2, sim_width, LANE_WIDTH * 4)
-	var vertical_road = Rect2(center_point.x - LANE_WIDTH * 2, 0, LANE_WIDTH * 4, screen_size.y)
-	draw_rect(horizontal_road, Color(0.15, 0.15, 0.15))
-	draw_rect(vertical_road, Color(0.15, 0.15, 0.15))
-	draw_rect(Rect2(center_point - Vector2(LANE_WIDTH*2, LANE_WIDTH*2), Vector2(LANE_WIDTH*4, LANE_WIDTH*4)), INSTERSECTION_COLOR)
-
-	# 3. Vẽ các làn đường (tô màu theo mật độ chuẩn từng hướng)
-	# Nhánh Bắc tiếp cận ngã tư (đi xuống Nam) -> hướng NS
-	_draw_lane_with_density("NS", center_point.x - LANE_WIDTH * 2, 0, LANE_WIDTH * 2, center_point.y - LANE_WIDTH * 2) 
-	# Nhánh Nam tiếp cận ngã tư (đi lên Bắc) -> hướng SN
-	_draw_lane_with_density("SN", center_point.x, center_point.y + LANE_WIDTH * 2, LANE_WIDTH * 2, screen_size.y - (center_point.y + LANE_WIDTH * 2)) 
-	# Nhánh Tây tiếp cận ngã tư (đi sang Đông) -> hướng WE
-	_draw_lane_with_density("WE", 0, center_point.y, center_point.x - LANE_WIDTH * 2, LANE_WIDTH * 2) 
-	# Nhánh Đông tiếp cận ngã tư (đi sang Tây) -> hướng EW
-	_draw_lane_with_density("EW", center_point.x + LANE_WIDTH * 2, center_point.y - LANE_WIDTH * 2, sim_width - (center_point.x + LANE_WIDTH * 2), LANE_WIDTH * 2) 
-
-	# 4. Vẽ vạch kẻ đường
-	_draw_road_markings()
-
-	# 5. Vẽ đèn giao thông + đếm ngược + mật độ
-	_draw_traffic_lights()
-
-	# 6. Vẽ nhãn tên hướng + mật độ + đếm ngược lên bản đồ
-	_draw_direction_overlays()
-
-func _draw_lane_with_density(direction: String, x: float, y: float, w: float, h: float):
-	var density = traffic_data[direction]["density"]
-	# Luôn tô màu đường thể hiện mật độ (kể cả mật độ thấp hoặc 0%) để màu sắc đồng nhất 100% với nhãn và UI
-	if density >= 0.0:
-		var lane_color = _get_color_by_density(density)
-		draw_rect(Rect2(x, y, w, h), Color(lane_color.r, lane_color.g, lane_color.b, 0.75))
-
-func _get_color_by_density(density: float) -> Color:
-	if density <= 0.15: return Color(0.2, 0.9, 0.4)       # Xanh lá tươi (Rất thông thoáng)
-	elif density <= 0.35: return Color(0.5, 0.95, 0.2)      # Xanh lá mạ (Thông thoáng)
-	elif density <= 0.55: return Color(1.0, 0.85, 0.15)     # Vàng (Trung bình)
-	elif density <= 0.75: return Color(1.0, 0.55, 0.1)      # Cam (Đông đúc)
-	elif density <= 0.90: return Color(1.0, 0.2, 0.2)       # Đỏ tươi (Tắc nghẽn)
-	else: return Color(0.85, 0.1, 0.85)                     # Tím đỏ sẫm (Tắc nghiêm trọng)
-
-func _draw_road_markings():
-	# Vạch dừng màu trắng
-	draw_rect(Rect2(center_point.x - LANE_WIDTH*2, center_point.y - LANE_WIDTH*2 - 5, LANE_WIDTH*2, 5), Color.WHITE) 
-	draw_rect(Rect2(center_point.x, center_point.y + LANE_WIDTH*2, LANE_WIDTH*2, 5), Color.WHITE) 
-	draw_rect(Rect2(center_point.x - LANE_WIDTH*2 - 5, center_point.y, 5, LANE_WIDTH*2), Color.WHITE) 
-	draw_rect(Rect2(center_point.x + LANE_WIDTH*2, center_point.y - LANE_WIDTH*2, 5, LANE_WIDTH*2), Color.WHITE) 
+	var sidewalk_mat := StandardMaterial3D.new()
+	sidewalk_mat.albedo_color = Color(0.35, 0.35, 0.32)
 	
-	# Tim đường nét đứt
-	_draw_dashed_line(Vector2(center_point.x, 0), Vector2(center_point.x, center_point.y - LANE_WIDTH*2), Color.YELLOW)
-	_draw_dashed_line(Vector2(center_point.x, center_point.y + LANE_WIDTH*2), Vector2(center_point.x, screen_size.y), Color.YELLOW)
-	_draw_dashed_line(Vector2(0, center_point.y), Vector2(center_point.x - LANE_WIDTH*2, center_point.y), Color.YELLOW)
-	_draw_dashed_line(Vector2(center_point.x + LANE_WIDTH*2, center_point.y), Vector2(sim_width, center_point.y), Color.YELLOW)
+	var marking_mat := StandardMaterial3D.new()
+	marking_mat.albedo_color = Color(0.95, 0.95, 0.95)
+	marking_mat.emission_enabled = true
+	marking_mat.emission = Color(0.5, 0.5, 0.5)
+	marking_mat.emission_energy_multiplier = 0.3
 
-func _draw_dashed_line(from: Vector2, to: Vector2, color: Color):
-	var length = from.distance_to(to)
-	var dir = (to - from).normalized()
-	var current_dist = 0.0
-	while current_dist < length:
-		draw_line(from + dir * current_dist, from + dir * min(current_dist + 15, length), color, 2.0)
-		current_dist += 30.0
+	# Đường dọc (Bắc-Nam)
+	var road_ns := CSGBox3D.new()
+	road_ns.name = "RoadNS"
+	road_ns.size = Vector3(ROAD_WIDTH, 0.12, ROAD_LENGTH * 2 + INTERSECTION_SIZE)
+	road_ns.position = Vector3(0, ROAD_Y, 0)
+	road_ns.material = road_mat
+	add_child(road_ns)
+	
+	# Đường ngang (Đông-Tây)
+	var road_ew := CSGBox3D.new()
+	road_ew.name = "RoadEW"
+	road_ew.size = Vector3(ROAD_LENGTH * 2 + INTERSECTION_SIZE, 0.12, ROAD_WIDTH)
+	road_ew.position = Vector3(0, ROAD_Y, 0)
+	road_ew.material = road_mat
+	add_child(road_ew)
+	
+	# Vỉa hè (4 góc)
+	for ix in [-1, 1]:
+		for iz in [-1, 1]:
+			var sw := CSGBox3D.new()
+			sw.name = "Sidewalk_%d_%d" % [ix, iz]
+			sw.size = Vector3(ROAD_LENGTH - 10, 0.3, ROAD_LENGTH - 10)
+			sw.position = Vector3(ix * (ROAD_WIDTH/2 + (ROAD_LENGTH-10)/2 + 5), 0.15, iz * (ROAD_WIDTH/2 + (ROAD_LENGTH-10)/2 + 5))
+			sw.material = sidewalk_mat
+			add_child(sw)
+	
+	# Vạch tim đường (dọc)
+	for seg in range(-10, 11):
+		if abs(seg) <= 1: continue  # Skip intersection
+		var mark := CSGBox3D.new()
+		mark.size = Vector3(0.15, 0.14, 3.0)
+		mark.position = Vector3(0, ROAD_Y + 0.01, seg * 10.0)
+		mark.material = marking_mat
+		add_child(mark)
+	
+	# Vạch tim đường (ngang)
+	for seg in range(-10, 11):
+		if abs(seg) <= 1: continue
+		var mark := CSGBox3D.new()
+		mark.size = Vector3(3.0, 0.14, 0.15)
+		mark.position = Vector3(seg * 10.0, ROAD_Y + 0.01, 0)
+		mark.material = marking_mat
+		add_child(mark)
+	
+	# Vạch dừng (4 vị trí)
+	var stop_mat := StandardMaterial3D.new()
+	stop_mat.albedo_color = Color(1, 1, 1)
+	stop_mat.emission_enabled = true
+	stop_mat.emission = Color(0.8, 0.8, 0.8)
+	stop_mat.emission_energy_multiplier = 0.5
+	
+	for data in [
+		[Vector3(-(ROAD_WIDTH/4), ROAD_Y + 0.02, -(INTERSECTION_SIZE/2 + 0.5)), Vector3(ROAD_WIDTH/2, 0.13, 0.4)],
+		[Vector3((ROAD_WIDTH/4), ROAD_Y + 0.02, (INTERSECTION_SIZE/2 + 0.5)), Vector3(ROAD_WIDTH/2, 0.13, 0.4)],
+		[Vector3(-(INTERSECTION_SIZE/2 + 0.5), ROAD_Y + 0.02, (ROAD_WIDTH/4)), Vector3(0.4, 0.13, ROAD_WIDTH/2)],
+		[Vector3((INTERSECTION_SIZE/2 + 0.5), ROAD_Y + 0.02, -(ROAD_WIDTH/4)), Vector3(0.4, 0.13, ROAD_WIDTH/2)],
+	]:
+		var stop := CSGBox3D.new()
+		stop.position = data[0]
+		stop.size = data[1]
+		stop.material = stop_mat
+		add_child(stop)
 
-func _draw_traffic_lights():
-	var offset = LANE_WIDTH * 2.5
-	var positions = {
-		"NS": center_point + Vector2(-LANE_WIDTH * 1.5, -LANE_WIDTH * 2.5),
-		"EW": center_point + Vector2(offset, -offset + 40),
-		"SN": center_point + Vector2(offset - 40, offset),
-		"WE": center_point + Vector2(-offset, offset - 40)
+func _build_intersection():
+	var int_mat := StandardMaterial3D.new()
+	int_mat.albedo_color = Color(0.22, 0.22, 0.25)
+	
+	var ibox := CSGBox3D.new()
+	ibox.name = "IntersectionBox"
+	ibox.size = Vector3(INTERSECTION_SIZE + 2, 0.13, INTERSECTION_SIZE + 2)
+	ibox.position = Vector3(0, ROAD_Y, 0)
+	ibox.material = int_mat
+	add_child(ibox)
+
+func _build_traffic_lights():
+	var pole_mat := StandardMaterial3D.new()
+	pole_mat.albedo_color = Color(0.2, 0.2, 0.2)
+	
+	# Vị trí 4 cột đèn (góc ngã tư)
+	var positions := {
+		"NS": Vector3(-ROAD_WIDTH/2 - 2, 0, -INTERSECTION_SIZE/2 - 2),
+		"SN": Vector3(ROAD_WIDTH/2 + 2, 0, INTERSECTION_SIZE/2 + 2),
+		"EW": Vector3(INTERSECTION_SIZE/2 + 2, 0, -ROAD_WIDTH/2 - 2),
+		"WE": Vector3(-INTERSECTION_SIZE/2 - 2, 0, ROAD_WIDTH/2 + 2),
 	}
-	for dir_key in positions.keys():
-		var pos = positions[dir_key]
-		var state = traffic_data[dir_key]["light"]
-		var light_color = Color.RED if state == "DO" else (Color.YELLOW if state == "VANG" else Color.GREEN)
-		# Vòng tròn đèn
-		draw_circle(pos, 18.0, Color.BLACK)
-		draw_circle(pos, 14.0, light_color)
+	
+	for dir_key in positions:
+		var pos: Vector3 = positions[dir_key]
 		
-		# ── Vẽ số đếm ngược bên cạnh đèn ──
-		var time_left = traffic_data[dir_key]["time_left"]
-		var timer_text = str(int(time_left)) + "s"
-		var timer_pos = pos + Vector2(22, 6)  # Lệch sang phải, căn giữa dọc
-		# Nền tối cho dễ đọc
-		var text_width = _default_font.get_string_size(timer_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
-		draw_rect(Rect2(timer_pos.x - 2, timer_pos.y - 14, text_width + 4, 18), Color(0, 0, 0, 0.7))
-		draw_string(_default_font, timer_pos, timer_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color.WHITE)
-
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  VẼ NHÃN TÊN HƯỚNG + MẬT ĐỘ LÊN BẢN ĐỒ NGÃ TƯ           ║
-# ╚══════════════════════════════════════════════════════════════╝
-func _draw_direction_overlays():
-	"""
-	Vẽ thông tin overlay cho từng hướng trên bản đồ:
-	- Tên hướng bản đồ (Bắc-Nam, Đông-Tây, ...)
-	- Mật độ xe (%)
-	"""
-	# Vị trí đặt nhãn cho từng hướng (nằm trên nhánh đường, ngoài ngã tư)
-	var label_positions = {
-		# Bắc-Nam: phía trên ngã tư (nhánh Bắc)
-		"NS": center_point + Vector2(-LANE_WIDTH * 1.8, -LANE_WIDTH * 4.5),
-		# Đông-Tây: bên phải ngã tư (nhánh Đông)
-		"EW": center_point + Vector2(LANE_WIDTH * 2.8, -LANE_WIDTH * 3.5),
-		# Nam-Bắc: góc dưới phải
-		"SN": center_point + Vector2(LANE_WIDTH * 2.8, LANE_WIDTH * 3.0),
-		# Tây-Đông: góc dưới trái
-		"WE": center_point + Vector2(-LANE_WIDTH * 5.5, LANE_WIDTH * 3.0),
-	}
-
-	for dir_key in ["NS", "EW", "SN", "WE"]:
-		var pos = label_positions[dir_key]
-		var density = traffic_data[dir_key]["density"]
-		var density_pct = snapped(density * 100, 0.1)
-		var display_name = DIR_NAMES[dir_key]
-		var state = traffic_data[dir_key]["light"]
-
-		# ── Dòng 1: Tên hướng ──
-		var name_text = "🚗 " + display_name
-		var name_size = _default_font.get_string_size(name_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 15)
-
-		# ── Dòng 2: Mật độ ──
-		var density_text = "Mật độ: " + str(density_pct) + "%"
-		var density_size = _default_font.get_string_size(density_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13)
-
-		# ── Dòng 3: Trạng thái đèn ──
-		var light_label = "ĐỎ" if state == "DO" else ("VÀNG" if state == "VANG" else "XANH")
-		var light_text = "Đèn: " + light_label
-		var light_size = _default_font.get_string_size(light_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13)
-
-		# Tính kích thước hộp nền
-		var box_w = max(name_size.x, max(density_size.x, light_size.x)) + 16
-		var box_h = 56
+		# Cột đèn
+		var pole := CSGCylinder3D.new()
+		pole.name = "Pole_" + dir_key
+		pole.radius = 0.15
+		pole.height = 8.0
+		pole.position = pos + Vector3(0, 4, 0)
+		pole.material = pole_mat
+		add_child(pole)
 		
-		# Vẽ hộp nền bán trong suốt
-		draw_rect(Rect2(pos.x - 4, pos.y - 16, box_w, box_h), Color(0.05, 0.05, 0.12, 0.85))
-		draw_rect(Rect2(pos.x - 4, pos.y - 16, box_w, box_h), Color(0.4, 0.6, 1.0, 0.3), false, 1.5)
-
-		# Vẽ dòng 1: Tên hướng (màu sáng, cỡ 15)
-		draw_string(_default_font, pos, name_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color(0.7, 0.85, 1.0))
+		# Hộp đèn
+		var box := CSGBox3D.new()
+		box.name = "LightBox_" + dir_key
+		box.size = Vector3(1.2, 3.5, 0.8)
+		box.position = pos + Vector3(0, 7.0, 0)
+		var box_mat := StandardMaterial3D.new()
+		box_mat.albedo_color = Color(0.1, 0.1, 0.1)
+		box.material = box_mat
+		add_child(box)
 		
-		# Vẽ dòng 2: Mật độ (màu theo mức độ, cỡ 13)
-		var density_color = _get_color_by_density(density)
-		draw_string(_default_font, pos + Vector2(0, 18), density_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, density_color)
-
-		# Vẽ dòng 3: Trạng thái đèn (màu đèn, cỡ 13)
-		var light_draw_color = Color.RED if state == "DO" else (Color.YELLOW if state == "VANG" else Color.GREEN)
-		draw_string(_default_font, pos + Vector2(0, 34), light_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, light_draw_color)
-
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  BẢNG ĐIỀU KHIỂN DASHBOARD (50% bên phải)                   ║
-# ╚══════════════════════════════════════════════════════════════╝
-func _dunk_dashboard_panel():
-	# 1. Panel chính
-	var panel = Panel.new()
-	panel.size = Vector2(screen_size.x * 0.5, screen_size.y)
-	panel.position = Vector2(screen_size.x * 0.5, 0)
-	add_child(panel)
-	
-	# 2. VBoxContainer không cần Scroll
-	var vbox = VBoxContainer.new()
-	vbox.size = Vector2(panel.size.x - 40, panel.size.y - 40)
-	vbox.position = Vector2(20, 20)
-	vbox.add_theme_constant_override("separation", 10)
-	panel.add_child(vbox)
-	
-	# Tittle
-	var title = Label.new()
-	title.text = "🚦 COMMAND CENTER (DIGITAL TWIN LEVEL 4)"
-	title.horizontal_alignment = HorizontalAlignment.HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(title)
-	vbox.add_child(HSeparator.new())
-
-	# ── SECTION: MẬT ĐỘ XE THEO HƯỚNG (MỚI) ──
-	var sec_density = Label.new()
-	sec_density.text = "🚗 MẬT ĐỘ XE THEO HƯỚNG"
-	vbox.add_child(sec_density)
-	
-	var density_grid = GridContainer.new()
-	density_grid.columns = 2
-	density_grid.add_theme_constant_override("h_separation", 30)
-	density_grid.add_theme_constant_override("v_separation", 6)
-	vbox.add_child(density_grid)
-	
-	for dir_key in ["NS", "EW", "SN", "WE"]:
-		var lbl = Label.new()
-		lbl.text = "• " + DIR_NAMES[dir_key] + ": --% | Đèn: -- | ⏱ --s"
-		density_grid.add_child(lbl)
-		labels["density_" + dir_key] = lbl
-
-	vbox.add_child(HSeparator.new())
-	
-	# SECTION: KPIs
-	var sec_kpi = Label.new()
-	sec_kpi.text = "📊 CHỈ SỐ VẬN HÀNH (REAL-TIME)"
-	vbox.add_child(sec_kpi)
-	
-	var kpi_grid = GridContainer.new()
-	kpi_grid.columns = 2
-	kpi_grid.add_theme_constant_override("h_separation", 60)
-	kpi_grid.add_theme_constant_override("v_separation", 8)
-	vbox.add_child(kpi_grid)
-	
-	var kpi_names = ["throughput", "avgWait", "efficiency"]
-	var display_texts = ["• Thông lượng: --", "• Chờ TB: -- s", "• Hiệu suất: -- %"]
-	for i in range(kpi_names.size()):
-		var lbl = Label.new()
-		lbl.text = display_texts[i]
-		kpi_grid.add_child(lbl)
-		labels[kpi_names[i]] = lbl
-		
-	vbox.add_child(HSeparator.new())
-	
-	# SECTION: FORECAST (dùng tên hướng bản đồ)
-	var sec_forecast = Label.new()
-	sec_forecast.text = "🧠 MÔ HÌNH DỰ BÁO LƯU LƯỢNG (EMA)"
-	vbox.add_child(sec_forecast)
-	
-	var fc_grid = GridContainer.new()
-	fc_grid.columns = 2
-	fc_grid.add_theme_constant_override("h_separation", 60)
-	fc_grid.add_theme_constant_override("v_separation", 8)
-	vbox.add_child(fc_grid)
-	
-	for dir_key in ["NS", "EW", "SN", "WE"]:
-		var lbl = Label.new()
-		lbl.text = "• " + DIR_NAMES[dir_key] + ": -- %"
-		fc_grid.add_child(lbl)
-		labels["forecast_" + dir_key] = lbl
-		
-	vbox.add_child(HSeparator.new())
-	
-	# SECTION: AI OPTIMIZATION (đề xuất cho 4 hướng)
-	var sec_ai = Label.new()
-	sec_ai.text = "🤖 AI OPTIMIZATION (HÀM MỤC TIÊU min J)"
-	vbox.add_child(sec_ai)
-
-	var ai_grid = GridContainer.new()
-	ai_grid.columns = 2
-	ai_grid.add_theme_constant_override("h_separation", 30)
-	ai_grid.add_theme_constant_override("v_separation", 6)
-	vbox.add_child(ai_grid)
-
-	for dir_key in ["NS", "EW", "SN", "WE"]:
-		var lbl = Label.new()
-		lbl.text = "👉 " + DIR_NAMES[dir_key] + ": --s"
-		ai_grid.add_child(lbl)
-		labels["ai_" + dir_key] = lbl
-
-	var lbl_improve = Label.new()
-	lbl_improve.text = "📈 Hiệu quả cải thiện: -- %"
-	vbox.add_child(lbl_improve)
-	labels["improvement"] = lbl_improve
-	
-	vbox.add_child(HSeparator.new())
-	
-	# SECTION: CONTROL
-	var sec_feedback = Label.new()
-	sec_feedback.text = "🎛️ FEEDBACK LOOP (Level 4)"
-	vbox.add_child(sec_feedback)
-	
-	var btn_apply = Button.new()
-	btn_apply.text = "ÁP DỤNG ĐỀ XUẤT CHU KỲ CỦA AI"
-	btn_apply.custom_minimum_size = Vector2(0, 45)
-	btn_apply.pressed.connect(self._on_apply_button_pressed)
-	vbox.add_child(btn_apply)
-
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  CẬP NHẬT DỮ LIỆU ĐỒNG BỘ TỪ WEBSOCKET                   ║
-# ╚══════════════════════════════════════════════════════════════╝
-func update_twin_state(new_data: Dictionary):
-	for dir_key in ["NS", "EW", "SN", "WE"]:
-		if new_data.has(dir_key):
-			traffic_data[dir_key]["density"] = new_data[dir_key].get("density", 0.0)
-			traffic_data[dir_key]["light"] = new_data[dir_key].get("light", "DO")
-			traffic_data[dir_key]["time_left"] = new_data[dir_key].get("time_left", 0.0)
+		# 3 đèn (Đỏ / Vàng / Xanh)
+		for li in range(3):
+			var light_mesh := CSGSphere3D.new()
+			light_mesh.name = "Light_%s_%d" % [dir_key, li]
+			light_mesh.radius = 0.35
+			light_mesh.position = pos + Vector3(0, 8.0 - li * 1.0, 0.5)
+			var lmat := StandardMaterial3D.new()
+			lmat.albedo_color = Color(0.1, 0.1, 0.1)
+			light_mesh.material = lmat
+			add_child(light_mesh)
 			
-			# ── Cập nhật label mật độ + đèn + đếm ngược trên Dashboard ──
-			var d_val = traffic_data[dir_key]["density"]
-			var d_pct = snapped(d_val * 100, 0.1)
-			var light_state = traffic_data[dir_key]["light"]
-			var light_vn = "ĐỎ" if light_state == "DO" else ("VÀNG" if light_state == "VANG" else "XANH")
-			var t_left = int(traffic_data[dir_key]["time_left"])
-			var dir_name = DIR_NAMES[dir_key]
-			labels["density_" + dir_key].text = "• " + dir_name + ": " + str(d_pct) + "% | " + light_vn + " | ⏱ " + str(t_left) + "s"
-			labels["density_" + dir_key].add_theme_color_override("font_color", _get_color_by_density(d_val))
-			
-	if new_data.has("kpis"):
-		var kpis = new_data["kpis"]
-		labels["throughput"].text = "• Thông lượng: " + str(snapped(kpis.get("throughput", 0), 0.1)) + " xe/ph"
-		labels["avgWait"].text = "• Chờ TB: " + str(snapped(kpis.get("avgWait", 0), 0.1)) + " s"
-		labels["efficiency"].text = "• Hiệu suất: " + str(snapped(kpis.get("efficiency", 0), 0.1)) + " %"
+			# Lưu reference cho đèn active
+			if li == 0:  # Đèn đỏ
+				_traffic_light_meshes[dir_key + "_R"] = light_mesh
+			elif li == 1:  # Đèn vàng
+				_traffic_light_meshes[dir_key + "_Y"] = light_mesh
+			else:  # Đèn xanh
+				_traffic_light_meshes[dir_key + "_G"] = light_mesh
 		
-	if new_data.has("forecast"):
-		var fc = new_data["forecast"]
-		for dir_key in ["NS", "EW", "SN", "WE"]:
-			if fc.has(dir_key):
-				labels["forecast_" + dir_key].text = "• " + DIR_NAMES[dir_key] + ": " + str(snapped(fc[dir_key] * 100, 0.1)) + " %"
-				
-	if new_data.has("ai_decision"):
-		var ai = new_data["ai_decision"]
+		# OmniLight3D cho hiệu ứng phát sáng
+		var omni := OmniLight3D.new()
+		omni.name = "OmniLight_" + dir_key
+		omni.position = pos + Vector3(0, 7.0, 1.5)
+		omni.light_energy = 2.0
+		omni.omni_range = 8.0
+		omni.light_color = Color.RED
+		add_child(omni)
+		_traffic_light_meshes[dir_key + "_omni"] = omni
+		
+		# ── Đèn rẽ trái (nhỏ hơn, bên cạnh đèn chính) ──
+		var lt_key: String = dir_key + "_LEFT"
+		var lt_offsets := {
+			"NS": Vector3(2.0, 0, 0),
+			"SN": Vector3(-2.0, 0, 0),
+			"EW": Vector3(0, 0, 2.0),
+			"WE": Vector3(0, 0, -2.0),
+		}
+		var lt_off: Vector3 = lt_offsets[dir_key]
+		
+		var lt_pole := CSGCylinder3D.new()
+		lt_pole.name = "LTPole_" + dir_key
+		lt_pole.radius = 0.1
+		lt_pole.height = 6.0
+		lt_pole.position = pos + lt_off + Vector3(0, 3, 0)
+		lt_pole.material = pole_mat
+		add_child(lt_pole)
+		
+		var lt_box := CSGBox3D.new()
+		lt_box.name = "LTBox_" + dir_key
+		lt_box.size = Vector3(0.9, 2.8, 0.6)
+		lt_box.position = pos + lt_off + Vector3(0, 5.5, 0)
+		lt_box.material = box_mat
+		add_child(lt_box)
+		
+		for li_lt in range(3):
+			var lt_mesh := CSGSphere3D.new()
+			lt_mesh.name = "LTLight_%s_%d" % [dir_key, li_lt]
+			lt_mesh.radius = 0.28
+			lt_mesh.position = pos + lt_off + Vector3(0, 6.3 - li_lt * 0.85, 0.4)
+			var ltmat := StandardMaterial3D.new()
+			ltmat.albedo_color = Color(0.1, 0.1, 0.1)
+			lt_mesh.material = ltmat
+			add_child(lt_mesh)
+			
+			if li_lt == 0:
+				_traffic_light_meshes[lt_key + "_R"] = lt_mesh
+			elif li_lt == 1:
+				_traffic_light_meshes[lt_key + "_Y"] = lt_mesh
+			else:
+				_traffic_light_meshes[lt_key + "_G"] = lt_mesh
+		
+		var lt_omni := OmniLight3D.new()
+		lt_omni.name = "LTOmni_" + dir_key
+		lt_omni.position = pos + lt_off + Vector3(0, 5.5, 1.0)
+		lt_omni.light_energy = 1.5
+		lt_omni.omni_range = 6.0
+		lt_omni.light_color = Color.RED
+		add_child(lt_omni)
+		_traffic_light_meshes[lt_key + "_omni"] = lt_omni
+
+func _update_traffic_light_colors():
+	for dir_key in THROUGH_DIRS:
+		var state_str: String = traffic_data[dir_key]["light"]
+		
+		# Reset tất cả đèn về tối
+		for suffix in ["_R", "_Y", "_G"]:
+			var mesh: CSGSphere3D = _traffic_light_meshes.get(dir_key + suffix)
+			if mesh:
+				var mat: StandardMaterial3D = mesh.material as StandardMaterial3D
+				if mat:
+					mat.albedo_color = Color(0.15, 0.15, 0.15)
+					mat.emission_enabled = false
+		
+		# Bật đèn active
+		var active_suffix := "_R"
+		var light_color := Color.RED
+		
+		if state_str == "XANH":
+			active_suffix = "_G"
+			light_color = Color(0.1, 0.95, 0.3)
+		elif state_str == "VANG":
+			active_suffix = "_Y"
+			light_color = Color(1.0, 0.9, 0.1)
+		else:
+			active_suffix = "_R"
+			light_color = Color(1.0, 0.15, 0.1)
+		
+		var active_mesh: CSGSphere3D = _traffic_light_meshes.get(dir_key + active_suffix)
+		if active_mesh:
+			var mat: StandardMaterial3D = active_mesh.material as StandardMaterial3D
+			if mat:
+				mat.albedo_color = light_color
+				mat.emission_enabled = true
+				mat.emission = light_color
+				mat.emission_energy_multiplier = 3.0
+		
+		# Cập nhật OmniLight
+		var omni: OmniLight3D = _traffic_light_meshes.get(dir_key + "_omni")
+		if omni:
+			omni.light_color = light_color
+	
+	# ── Cập nhật đèn rẽ trái ──
+	for dir_key_lt in THROUGH_DIRS:
+		var lt_key: String = dir_key_lt + "_LEFT"
+		var lt_state: String = traffic_data[lt_key]["light"]
+		
+		# Reset đèn rẽ trái về tối
+		for suffix in ["_R", "_Y", "_G"]:
+			var lt_mesh: CSGSphere3D = _traffic_light_meshes.get(lt_key + suffix)
+			if lt_mesh:
+				var lt_mat: StandardMaterial3D = lt_mesh.material as StandardMaterial3D
+				if lt_mat:
+					lt_mat.albedo_color = Color(0.15, 0.15, 0.15)
+					lt_mat.emission_enabled = false
+		
+		# Bật đèn rẽ trái active
+		var lt_suffix := "_R"
+		var lt_color := Color.RED
+		
+		if lt_state == "XANH":
+			lt_suffix = "_G"
+			lt_color = Color(0.1, 0.95, 0.3)
+		elif lt_state == "VANG":
+			lt_suffix = "_Y"
+			lt_color = Color(1.0, 0.9, 0.1)
+		else:
+			lt_suffix = "_R"
+			lt_color = Color(1.0, 0.15, 0.1)
+		
+		var lt_active: CSGSphere3D = _traffic_light_meshes.get(lt_key + lt_suffix)
+		if lt_active:
+			var lt_mat: StandardMaterial3D = lt_active.material as StandardMaterial3D
+			if lt_mat:
+				lt_mat.albedo_color = lt_color
+				lt_mat.emission_enabled = true
+				lt_mat.emission = lt_color
+				lt_mat.emission_energy_multiplier = 3.0
+		
+		var lt_omni: OmniLight3D = _traffic_light_meshes.get(lt_key + "_omni")
+		if lt_omni:
+			lt_omni.light_color = lt_color
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  XE 3D (CSG PRIMITIVES)                                     ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+func _update_vehicles():
+	for dir_key in ALL_DIRS:
+		var target: int = int(traffic_data["queue_counts"].get(dir_key, 0))
+		var current: Array = _vehicle_nodes[dir_key]
+		var light_state: String = traffic_data[dir_key].get("light", "DO")
+		
+		# Spawn thêm xe (ở cuối hàng chờ) — luôn cho phép
+		while current.size() < target:
+			var veh := _create_vehicle(dir_key, current.size())
+			current.append(veh)
+			add_child(veh)
+		
+		# Xóa xe — CHỈ khi đèn XANH (xe được phép rời đi)
+		if light_state == "XANH":
+			while current.size() > target and current.size() > 0:
+				var v: Node3D = current.pop_front()
+				v.queue_free()
+		
+		# Trượt xe còn lại tiến lên vị trí mới (lerp mượt mà)
+		for i in range(current.size()):
+			var new_pos := _get_vehicle_pos(dir_key, i)
+			var veh: Node3D = current[i]
+			veh.position = veh.position.lerp(new_pos, 0.15)
+
+func _create_vehicle(dir_key: String, index: int) -> Node3D:
+	var is_moto := randf() < 0.65
+	var veh := CSGBox3D.new()
+	veh.name = "Veh_%s_%d" % [dir_key, index]
+	
+	var mat := StandardMaterial3D.new()
+	mat.emission_enabled = true
+	mat.emission_energy_multiplier = 0.4
+	
+	if is_moto:
+		veh.size = Vector3(0.6, 0.5, 1.8)
+		var hue := randf()
+		mat.albedo_color = Color.from_hsv(hue, 0.7, 0.9)
+		mat.emission = Color.from_hsv(hue, 0.5, 0.3)
+	else:
+		veh.size = Vector3(1.8, 0.7, 4.2)
+		var colors := [
+			Color(0.8, 0.2, 0.2), Color(0.2, 0.4, 0.8),
+			Color(0.9, 0.9, 0.9), Color(0.15, 0.15, 0.15),
+			Color(0.7, 0.7, 0.1),
+		]
+		mat.albedo_color = colors[randi() % colors.size()]
+		mat.emission = mat.albedo_color * 0.2
+	
+	veh.material = mat
+	veh.position = _get_vehicle_pos(dir_key, index)
+	
+	# Xoay xe hướng Đông-Tây cho nằm ngang theo đường
+	if dir_key in ["EW", "EW_LEFT", "WE", "WE_LEFT"]:
+		veh.rotation_degrees.y = 90.0
+	
+	return veh
+
+func _get_vehicle_pos(dir_key: String, index: int) -> Vector3:
+	var spacing := 5.5
+	var offset := (index + 1) * spacing
+	var lane_y := ROAD_Y + 0.5
+	
+	match dir_key:
+		"NS":
+			return Vector3(-LANE_WIDTH, lane_y, -(INTERSECTION_SIZE/2 + offset))
+		"NS_LEFT":
+			return Vector3(-LANE_WIDTH/2, lane_y, -(INTERSECTION_SIZE/2 + offset))
+		"SN":
+			return Vector3(LANE_WIDTH, lane_y, INTERSECTION_SIZE/2 + offset)
+		"SN_LEFT":
+			return Vector3(LANE_WIDTH/2, lane_y, INTERSECTION_SIZE/2 + offset)
+		"EW":
+			return Vector3(INTERSECTION_SIZE/2 + offset, lane_y, -LANE_WIDTH)
+		"EW_LEFT":
+			return Vector3(INTERSECTION_SIZE/2 + offset, lane_y, -LANE_WIDTH/2)
+		"WE":
+			return Vector3(-(INTERSECTION_SIZE/2 + offset), lane_y, LANE_WIDTH)
+		"WE_LEFT":
+			return Vector3(-(INTERSECTION_SIZE/2 + offset), lane_y, LANE_WIDTH/2)
+	return Vector3.ZERO
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  DASHBOARD UI (CanvasLayer overlay)                          ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+func _build_dashboard():
+	var canvas := CanvasLayer.new()
+	canvas.name = "DashboardUI"
+	add_child(canvas)
+	
+	var panel := Panel.new()
+	panel.name = "DashPanel"
+	panel.size = Vector2(420, 720)
+	panel.position = Vector2(10, 10)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.03, 0.04, 0.08, 0.88)
+	style.border_color = Color(0.2, 0.35, 0.7, 0.5)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(8)
+	panel.add_theme_stylebox_override("panel", style)
+	canvas.add_child(panel)
+	
+	var scroll := ScrollContainer.new()
+	scroll.size = Vector2(400, 700)
+	scroll.position = Vector2(10, 10)
+	panel.add_child(scroll)
+	
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 5)
+	scroll.add_child(vbox)
+	
+	# Title
+	_add_label(vbox, "title", "🚦 DIGITAL TWIN L4 PRO — COMMAND CENTER", 16, Color(0.6, 0.8, 1.0))
+	_add_label(vbox, "arch", "SUMO + 4-Phase NEMA + PCE VN + Auto-Apply AI", 10, Color(0.4, 0.55, 0.8))
+	vbox.add_child(HSeparator.new())
+	
+	# SimClock
+	_add_label(vbox, "sec_clock", "🕐 SIMULATION CLOCK", 13, Color(0.8, 0.85, 1.0))
+	_add_label(vbox, "clock_time", "• Thời gian: 07:30:00 | Speed: 1.0x | Day 1", 12, Color.WHITE)
+	vbox.add_child(HSeparator.new())
+	
+	# Fidelity
+	_add_label(vbox, "sec_fidelity", "🎯 FIDELITY", 13, Color(0.8, 0.85, 1.0))
+	_add_label(vbox, "fidelity", "• Độ chính xác: -- %", 12, Color.WHITE)
+	vbox.add_child(HSeparator.new())
+	
+	# Density (8 directions in 2 groups)
+	_add_label(vbox, "sec_density", "🚗 MẬT ĐỘ XE (8 hướng, 4 pha)", 13, Color(0.8, 0.85, 1.0))
+	for d in ALL_DIRS:
+		var name_str: String = DIR_NAMES.get(d, d)
+		_add_label(vbox, "d_" + d, "  " + name_str + ": --% | -- | ⏱ --s", 11, Color(0.7, 0.7, 0.7))
+	vbox.add_child(HSeparator.new())
+	
+	# KPIs
+	_add_label(vbox, "sec_kpi", "📊 KPI — HCM 2010", 13, Color(0.8, 0.85, 1.0))
+	_add_label(vbox, "throughput", "• Thông lượng: -- PCU/ph", 12, Color.WHITE)
+	_add_label(vbox, "avgWait", "• Chờ TB: -- s", 12, Color.WHITE)
+	_add_label(vbox, "efficiency", "• Hiệu suất: -- %", 12, Color.WHITE)
+	vbox.add_child(HSeparator.new())
+	
+	# AI Optimizer
+	_add_label(vbox, "sec_ai", "🤖 AI OPTIMIZER (4 PHA)", 13, Color(0.8, 0.85, 1.0))
+	for p in ["PH1", "PH2", "PH3", "PH4"]:
+		_add_label(vbox, "ai_" + p, "  " + PHASE_NAMES[p] + ": --s", 11, Color(0.7, 0.7, 0.7))
+	_add_label(vbox, "improvement", "📈 Cải thiện: -- %", 12, Color.WHITE)
+	_add_label(vbox, "auto_apply_status", "🤖 Auto-Apply: ON", 12, Color(0.3, 0.9, 0.4))
+	vbox.add_child(HSeparator.new())
+	
+	# PCE Info
+	_add_label(vbox, "sec_pce", "🏍️ PCE (Giao thông VN)", 13, Color(0.8, 0.85, 1.0))
+	_add_label(vbox, "pce_info", "• Xe máy: 0.25 PCU | Mix: 65% moto", 11, Color(0.6, 0.7, 0.8))
+	vbox.add_child(HSeparator.new())
+	
+	# Controls
+	_add_label(vbox, "sec_ctrl", "🎛️ CONTROLS", 13, Color(0.8, 0.85, 1.0))
+	
+	# Speed buttons
+	var speed_hbox := HBoxContainer.new()
+	speed_hbox.add_theme_constant_override("separation", 5)
+	vbox.add_child(speed_hbox)
+	
+	for spd in [1, 5, 10, 30, 60]:
+		var btn := Button.new()
+		btn.text = str(spd) + "x"
+		btn.custom_minimum_size = Vector2(55, 32)
+		btn.pressed.connect(_on_speed_button.bind(spd))
+		speed_hbox.add_child(btn)
+	
+	# Jump buttons
+	var jump_hbox := HBoxContainer.new()
+	jump_hbox.add_theme_constant_override("separation", 5)
+	vbox.add_child(jump_hbox)
+	
+	for hr in [7, 8, 12, 17, 22]:
+		var btn := Button.new()
+		btn.text = str(hr) + ":00"
+		btn.custom_minimum_size = Vector2(55, 32)
+		btn.pressed.connect(_on_jump_button.bind(hr))
+		jump_hbox.add_child(btn)
+	
+	# Apply AI + Toggle Auto
+	var ctrl_hbox := HBoxContainer.new()
+	ctrl_hbox.add_theme_constant_override("separation", 5)
+	vbox.add_child(ctrl_hbox)
+	
+	var btn_apply := Button.new()
+	btn_apply.text = "ÁP DỤNG AI"
+	btn_apply.custom_minimum_size = Vector2(120, 36)
+	btn_apply.pressed.connect(_on_apply_pressed)
+	ctrl_hbox.add_child(btn_apply)
+	
+	var btn_toggle := Button.new()
+	btn_toggle.text = "TOGGLE AUTO"
+	btn_toggle.custom_minimum_size = Vector2(120, 36)
+	btn_toggle.pressed.connect(_on_toggle_auto_pressed)
+	ctrl_hbox.add_child(btn_toggle)
+
+func _add_label(parent: Control, key: String, text: String, size: int, color: Color):
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.add_theme_font_size_override("font_size", size)
+	lbl.add_theme_color_override("font_color", color)
+	parent.add_child(lbl)
+	_labels[key] = lbl
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  CẬP NHẬT DỮ LIỆU TỪ WEBSOCKET                            ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+func update_twin_state(data: Dictionary):
+	# Directions
+	for d in ALL_DIRS:
+		if data.has(d):
+			traffic_data[d]["density"] = data[d].get("density", 0.0)
+			traffic_data[d]["light"] = data[d].get("light", "DO")
+			traffic_data[d]["time_left"] = data[d].get("time_left", 0.0)
+			
+			var val: float = traffic_data[d]["density"]
+			var pct: float = snapped(val * 100, 0.1)
+			var light_str: String = traffic_data[d]["light"]
+			var light_vn := "ĐỎ" if light_str == "DO" else ("VÀNG" if light_str == "VANG" else "XANH")
+			var t_left := int(traffic_data[d]["time_left"])
+			var name_str: String = DIR_NAMES.get(d, d)
+			
+			if _labels.has("d_" + d):
+				_labels["d_" + d].text = "  " + name_str + ": " + str(pct) + "% | " + light_vn + " | ⏱ " + str(t_left) + "s"
+				_labels["d_" + d].add_theme_color_override("font_color", _density_color(val))
+	
+	# KPIs
+	if data.has("kpis"):
+		var k: Dictionary = data["kpis"]
+		_labels["throughput"].text = "• Thông lượng: " + str(snapped(k.get("throughput", 0), 0.1)) + " PCU/ph"
+		_labels["avgWait"].text = "• Chờ TB: " + str(snapped(k.get("avgWait", 0), 0.1)) + " s"
+		_labels["efficiency"].text = "• Hiệu suất: " + str(snapped(k.get("efficiency", 0), 0.1)) + " %"
+	
+	# AI Decision
+	if data.has("ai_decision"):
+		var ai: Dictionary = data["ai_decision"]
 		traffic_data["ai_decision"] = ai
-		# Cập nhật đề xuất 4 hướng
-		var gt = ai.get("green_times", {})
-		for dir_key in ["NS", "EW", "SN", "WE"]:
-			if gt.has(dir_key):
-				labels["ai_" + dir_key].text = "👉 " + DIR_NAMES[dir_key] + ": " + str(gt[dir_key]) + "s"
-		labels["improvement"].text = "📈 Hiệu quả cải thiện: " + str(snapped(ai.get("improvement", 0), 0.1)) + " %"
+		var gt: Dictionary = ai.get("green_times", {})
+		for p in ["PH1", "PH2", "PH3", "PH4"]:
+			if gt.has(p) and _labels.has("ai_" + p):
+				_labels["ai_" + p].text = "  " + PHASE_NAMES[p] + ": " + str(gt[p]) + "s"
+		if _labels.has("improvement"):
+			_labels["improvement"].text = "📈 Cải thiện: " + str(snapped(ai.get("improvement", 0), 0.1)) + " %"
+	
+	# Queue counts
+	if data.has("queue_counts"):
+		traffic_data["queue_counts"] = data["queue_counts"]
+	if data.has("ground_truth"):
+		traffic_data["ground_truth"] = data["ground_truth"]
+	if data.has("velocity"):
+		traffic_data["velocity"] = data["velocity"]
+	
+	# Fidelity
+	if data.has("fidelity"):
+		traffic_data["fidelity"] = data["fidelity"]
+		var fid: float = data["fidelity"]
+		if _labels.has("fidelity"):
+			_labels["fidelity"].text = "• Độ chính xác: " + str(snapped(fid, 0.1)) + " %"
+			var c := Color.GREEN if fid > 90.0 else (Color.YELLOW if fid > 70.0 else Color.RED)
+			_labels["fidelity"].add_theme_color_override("font_color", c)
+	
+	# SimClock
+	if data.has("sim_clock"):
+		traffic_data["sim_clock"] = data["sim_clock"]
+		var sc: Dictionary = data["sim_clock"]
+		if _labels.has("clock_time"):
+			_labels["clock_time"].text = "• " + str(sc.get("time_str", "??")) + " | Speed: " + str(sc.get("speed", 1)) + "x | Day " + str(sc.get("day", 1))
+	
+	# Auto-apply
+	if data.has("auto_apply"):
+		traffic_data["auto_apply"] = data["auto_apply"]
+		if _labels.has("auto_apply_status"):
+			var on: bool = data["auto_apply"]
+			_labels["auto_apply_status"].text = "🤖 Auto-Apply: " + ("ON" if on else "OFF")
+			_labels["auto_apply_status"].add_theme_color_override("font_color", Color(0.3, 0.9, 0.4) if on else Color(0.8, 0.3, 0.3))
 
-func _on_apply_button_pressed():
-	var net_manager = get_node_or_null("Network")
-	var ai = traffic_data["ai_decision"]
-	if net_manager and ai:
-		var gt = ai.get("green_times", {})
-		net_manager.send_control_action(gt)
-		print("[FEEDBACK] Đã gửi lệnh điều khiển xuống Backend.")
+func _density_color(d: float) -> Color:
+	if d <= 0.15: return Color(0.2, 0.9, 0.4)
+	elif d <= 0.35: return Color(0.5, 0.95, 0.2)
+	elif d <= 0.55: return Color(1.0, 0.85, 0.15)
+	elif d <= 0.75: return Color(1.0, 0.55, 0.1)
+	elif d <= 0.90: return Color(1.0, 0.2, 0.2)
+	else: return Color(0.85, 0.1, 0.85)
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  BUTTON CALLBACKS                                           ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+func _on_speed_button(speed: int):
+	var net := get_node_or_null("Network")
+	if net: net.send_speed_command(float(speed))
+
+func _on_jump_button(hour: int):
+	var net := get_node_or_null("Network")
+	if net: net.send_jump_command(hour)
+
+func _on_apply_pressed():
+	var net := get_node_or_null("Network")
+	var ai: Dictionary = traffic_data["ai_decision"]
+	if net and ai:
+		var gt: Dictionary = ai.get("green_times", {})
+		net.send_control_action(gt)
+
+func _on_toggle_auto_pressed():
+	var net := get_node_or_null("Network")
+	if net: net.send_toggle_auto()

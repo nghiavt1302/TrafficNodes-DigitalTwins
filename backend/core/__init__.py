@@ -1,3 +1,3 @@
 """
-core/__init__.py — Package core cho Digital Twin Level 4
+core/__init__.py — Package core cho Digital Twin Level 4 Pro
 """

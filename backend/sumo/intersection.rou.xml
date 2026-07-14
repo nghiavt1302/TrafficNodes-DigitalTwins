@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes>
+    <vType id="car" length="4.5" maxSpeed="13.89" accel="2.6" decel="4.5"
+           sigma="0.5" vClass="passenger" color="0.4,0.4,0.8"/>
+    <vType id="motorcycle" length="2.0" maxSpeed="11.11" accel="3.0" decel="5.0"
+           sigma="0.6" width="0.8" vClass="motorcycle" color="0.8,0.8,0.2"/>
+    <vType id="bus" length="12.0" maxSpeed="11.11" accel="1.2" decel="3.0"
+           sigma="0.4" vClass="bus" color="0.2,0.6,0.2"/>
+    <vType id="truck" length="10.0" maxSpeed="11.11" accel="1.0" decel="3.0"
+           sigma="0.4" vClass="truck" color="0.6,0.3,0.1"/>
+
+    <route id="NS_through" edges="north_in south_out"/>
+    <route id="NS_left" edges="north_in east_out"/>
+    <route id="SN_through" edges="south_in north_out"/>
+    <route id="SN_left" edges="south_in west_out"/>
+    <route id="EW_through" edges="east_in west_out"/>
+    <route id="EW_left" edges="east_in south_out"/>
+    <route id="WE_through" edges="west_in east_out"/>
+    <route id="WE_left" edges="west_in north_out"/>
+
+    <flow id="NS_car" type="car" route="NS_through"
+          begin="0" end="3600" probability="0.08" departLane="best" departSpeed="max"/>
+    <flow id="NS_moto" type="motorcycle" route="NS_through"
+          begin="0" end="3600" probability="0.20" departLane="best" departSpeed="max"/>
+    <flow id="NS_bus" type="bus" route="NS_through"
+          begin="0" end="3600" probability="0.01" departLane="1" departSpeed="max"/>
+
+    <flow id="NS_left_car" type="car" route="NS_left"
+          begin="0" end="3600" probability="0.02" departLane="2" departSpeed="max"/>
+    <flow id="NS_left_moto" type="motorcycle" route="NS_left"
+          begin="0" end="3600" probability="0.06" departLane="2" departSpeed="max"/>
+
+    <flow id="SN_car" type="car" route="SN_through"
+          begin="0" end="3600" probability="0.06" departLane="best" departSpeed="max"/>
+    <flow id="SN_moto" type="motorcycle" route="SN_through"
+          begin="0" end="3600" probability="0.16" departLane="best" departSpeed="max"/>
+
+    <flow id="SN_left_car" type="car" route="SN_left"
+          begin="0" end="3600" probability="0.015" departLane="2" departSpeed="max"/>
+    <flow id="SN_left_moto" type="motorcycle" route="SN_left"
+          begin="0" end="3600" probability="0.04" departLane="2" departSpeed="max"/>
+
+    <flow id="EW_car" type="car" route="EW_through"
+          begin="0" end="3600" probability="0.06" departLane="best" departSpeed="max"/>
+    <flow id="EW_moto" type="motorcycle" route="EW_through"
+          begin="0" end="3600" probability="0.15" departLane="best" departSpeed="max"/>
+
+    <flow id="EW_left_car" type="car" route="EW_left"
+          begin="0" end="3600" probability="0.012" departLane="0" departSpeed="max"/>
+    <flow id="EW_left_moto" type="motorcycle" route="EW_left"
+          begin="0" end="3600" probability="0.03" departLane="0" departSpeed="max"/>
+
+    <flow id="WE_car" type="car" route="WE_through"
+          begin="0" end="3600" probability="0.05" departLane="best" departSpeed="max"/>
+    <flow id="WE_moto" type="motorcycle" route="WE_through"
+          begin="0" end="3600" probability="0.12" departLane="best" departSpeed="max"/>
+
+    <flow id="WE_left_car" type="car" route="WE_left"
+          begin="0" end="3600" probability="0.01" departLane="0" departSpeed="max"/>
+    <flow id="WE_left_moto" type="motorcycle" route="WE_left"
+          begin="0" end="3600" probability="0.03" departLane="0" departSpeed="max"/>
+</routes>

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tlLogics>
+    <tlLogic id="C" type="static" programID="nema4" offset="0">
+        <!-- PH1: Rẽ trái NS/SN -->
+        <phase duration="15" state="rrrGrrrrrrrGrrrr"/>
+        <phase duration="3"  state="rrryrrrrrrryrrrr"/>
+        <phase duration="2"  state="rrrrrrrrrrrrrrrr"/>
+        
+        <!-- PH2: Thẳng + Phải NS/SN -->
+        <phase duration="35" state="GGGrrrrrGGGrrrrr"/>
+        <phase duration="3"  state="yyyrrrrryyyrrrrr"/>
+        <phase duration="2"  state="rrrrrrrrrrrrrrrr"/>
+        
+        <!-- PH3: Rẽ trái EW/WE -->
+        <phase duration="12" state="rrrrGrrrrrrrGrrr"/>
+        <phase duration="3"  state="rrrryrrrrrrryrrr"/>
+        <phase duration="2"  state="rrrrrrrrrrrrrrrr"/>
+        
+        <!-- PH4: Thẳng + Phải EW/WE -->
+        <phase duration="30" state="rrrrrGGGrrrrrGGG"/>
+        <phase duration="3"  state="rrrrryyyrrrrryyy"/>
+        <phase duration="2"  state="rrrrrrrrrrrrrrrr"/>
+    </tlLogic>
+</tlLogics>
