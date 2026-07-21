@@ -122,15 +122,26 @@
         <lane id="west_out_2" index="2" speed="13.89" length="286.40" shape="286.40,301.60 0.00,301.60"/>
     </edge>
 
-    <tlLogic id="C" type="static" programID="0" offset="0">
-        <phase duration="33" state="GGgrrrGGgrrr"/>
-        <phase duration="3"  state="yygrrryygrrr"/>
-        <phase duration="6"  state="rrGrrrrrGrrr"/>
+    <tlLogic id="C" type="static" programID="nema4" offset="0">
+        <!-- PH1: Rẽ trái NS/SN (index 0=Green, 1=Yellow, 2=AllRed) -->
+        <phase duration="15" state="rrGrrrrrGrrr"/>
         <phase duration="3"  state="rryrrrrryrrr"/>
-        <phase duration="33" state="rrrGGgrrrGGg"/>
-        <phase duration="3"  state="rrryygrrryyg"/>
-        <phase duration="6"  state="rrrrrGrrrrrG"/>
+        <phase duration="2"  state="rrrrrrrrrrrr"/>
+        
+        <!-- PH2: Thẳng + Phải NS/SN (index 3=Green, 4=Yellow, 5=AllRed) -->
+        <phase duration="35" state="GGrrrrGGrrrr"/>
+        <phase duration="3"  state="yyrrrryyrrrr"/>
+        <phase duration="2"  state="rrrrrrrrrrrr"/>
+        
+        <!-- PH3: Rẽ trái EW/WE (index 6=Green, 7=Yellow, 8=AllRed) -->
+        <phase duration="12" state="rrrrrGrrrrrG"/>
         <phase duration="3"  state="rrrrryrrrrry"/>
+        <phase duration="2"  state="rrrrrrrrrrrr"/>
+        
+        <!-- PH4: Thẳng + Phải EW/WE (index 9=Green, 10=Yellow, 11=AllRed) -->
+        <phase duration="30" state="rrrGGrrrrGGr"/>
+        <phase duration="3"  state="rrryyrrrryyr"/>
+        <phase duration="2"  state="rrrrrrrrrrrr"/>
     </tlLogic>
 
     <junction id="C" type="traffic_light" x="300.00" y="300.00" incLanes="north_in_0 north_in_1 north_in_2 east_in_0 east_in_1 east_in_2 south_in_0 south_in_1 south_in_2 west_in_0 west_in_1 west_in_2" intLanes=":C_0_0 :C_1_0 :C_12_0 :C_3_0 :C_4_0 :C_13_0 :C_6_0 :C_7_0 :C_14_0 :C_9_0 :C_10_0 :C_15_0" shape="290.40,313.60 309.60,313.60 310.04,311.38 310.60,310.60 311.38,310.04 312.38,309.71 313.60,309.60 313.60,290.40 311.38,289.96 310.60,289.40 310.04,288.62 309.71,287.62 309.60,286.40 290.40,286.40 289.96,288.62 289.40,289.40 288.62,289.96 287.62,290.29 286.40,290.40 286.40,309.60 288.62,310.04 289.40,310.60 289.96,311.38 290.29,312.38">
