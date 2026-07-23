@@ -456,80 +456,112 @@ func _get_vehicle_pos(dir_key: String, index: int) -> Vector3:
 
 func _build_dashboard():
 	var canvas := CanvasLayer.new()
-	canvas.name = "DashboardUI"
+	canvas.name = "Dashboard"
+	canvas.layer = 10
 	add_child(canvas)
 	
-	var panel := Panel.new()
-	panel.name = "DashPanel"
-	panel.size = Vector2(420, 720)
-	panel.position = Vector2(10, 10)
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.03, 0.04, 0.08, 0.88)
-	style.border_color = Color(0.2, 0.35, 0.7, 0.5)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(8)
-	panel.add_theme_stylebox_override("panel", style)
-	canvas.add_child(panel)
+	# ── Helper: tạo panel với style ──
+	var _make_panel := func(parent: Node, pos: Vector2, sz: Vector2) -> Panel:
+		var p := Panel.new()
+		p.size = sz
+		p.position = pos
+		var s := StyleBoxFlat.new()
+		s.bg_color = Color(0.03, 0.04, 0.08, 0.88)
+		s.border_color = Color(0.2, 0.35, 0.7, 0.5)
+		s.set_border_width_all(1)
+		s.set_corner_radius_all(8)
+		p.add_theme_stylebox_override("panel", s)
+		parent.add_child(p)
+		return p
 	
-	var scroll := ScrollContainer.new()
-	scroll.size = Vector2(400, 700)
-	scroll.position = Vector2(10, 10)
-	panel.add_child(scroll)
+	# ── Helper: tạo VBox trong panel ──
+	var _make_vbox := func(panel: Panel, margin: float) -> VBoxContainer:
+		var vb := VBoxContainer.new()
+		vb.position = Vector2(margin, margin)
+		vb.size = panel.size - Vector2(margin * 2, margin * 2)
+		vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		vb.add_theme_constant_override("separation", 4)
+		panel.add_child(vb)
+		return vb
 	
-	var vbox := VBoxContainer.new()
-	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	vbox.add_theme_constant_override("separation", 5)
-	scroll.add_child(vbox)
+	# ╔══════════════════════════════════════════════════════════════╗
+	# ║  TOP-LEFT: Clock + Fidelity + Phase                        ║
+	# ╚══════════════════════════════════════════════════════════════╝
+	var tl_panel: Panel = _make_panel.call(canvas, Vector2(10, 10), Vector2(340, 140))
+	var tl_vbox: VBoxContainer = _make_vbox.call(tl_panel, 10.0)
 	
-	# Title
-	_add_label(vbox, "title", "🚦 DIGITAL TWIN L4 PRO — COMMAND CENTER", 16, Color(0.6, 0.8, 1.0))
-	_add_label(vbox, "arch", "SUMO + 4-Phase NEMA + PCE VN + Auto-Apply AI", 10, Color(0.4, 0.55, 0.8))
-	vbox.add_child(HSeparator.new())
+	_add_label(tl_vbox, "title", "🚦 DIGITAL TWIN L4 PRO", 14, Color(0.6, 0.8, 1.0))
+	_add_label(tl_vbox, "clock_time", "🕐 07:30:00 | Speed: 1.0x | Day 1", 12, Color.WHITE)
+	_add_label(tl_vbox, "fidelity", "🎯 Fidelity: -- %", 12, Color.WHITE)
+	_add_label(tl_vbox, "phase_info", "💡 Pha: -- | Còn: --s", 12, Color(0.8, 0.9, 1.0))
 	
-	# SimClock
-	_add_label(vbox, "sec_clock", "🕐 SIMULATION CLOCK", 13, Color(0.8, 0.85, 1.0))
-	_add_label(vbox, "clock_time", "• Thời gian: 07:30:00 | Speed: 1.0x | Day 1", 12, Color.WHITE)
-	vbox.add_child(HSeparator.new())
+	# ╔══════════════════════════════════════════════════════════════╗
+	# ║  TOP-RIGHT: Density 8 directions                           ║
+	# ╚══════════════════════════════════════════════════════════════╝
+	var tr_panel: Panel = _make_panel.call(canvas, Vector2(1920 - 380 - 10, 10), Vector2(380, 280))
+	# Anchor top-right
+	tr_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	tr_panel.set_anchor(SIDE_LEFT, 1.0)
+	tr_panel.set_anchor(SIDE_RIGHT, 1.0)
+	tr_panel.offset_left = -390
+	tr_panel.offset_right = -10
+	tr_panel.offset_top = 10
+	tr_panel.offset_bottom = 290
+	var tr_vbox: VBoxContainer = _make_vbox.call(tr_panel, 10.0)
 	
-	# Fidelity
-	_add_label(vbox, "sec_fidelity", "🎯 FIDELITY", 13, Color(0.8, 0.85, 1.0))
-	_add_label(vbox, "fidelity", "• Độ chính xác: -- %", 12, Color.WHITE)
-	vbox.add_child(HSeparator.new())
-	
-	# Density (8 directions in 2 groups)
-	_add_label(vbox, "sec_density", "🚗 MẬT ĐỘ XE (8 hướng, 4 pha)", 13, Color(0.8, 0.85, 1.0))
+	_add_label(tr_vbox, "sec_density", "🚗 MẬT ĐỘ XE (8 hướng)", 13, Color(0.8, 0.85, 1.0))
 	for d in ALL_DIRS:
 		var name_str: String = DIR_NAMES.get(d, d)
-		_add_label(vbox, "d_" + d, "  " + name_str + ": --% | -- | ⏱ --s", 11, Color(0.7, 0.7, 0.7))
-	vbox.add_child(HSeparator.new())
+		_add_label(tr_vbox, "d_" + d, "  " + name_str + ": --% | -- | ⏱ --s", 11, Color(0.7, 0.7, 0.7))
 	
-	# KPIs
-	_add_label(vbox, "sec_kpi", "📊 KPI — HCM 2010", 13, Color(0.8, 0.85, 1.0))
-	_add_label(vbox, "throughput", "• Thông lượng: -- PCU/ph", 12, Color.WHITE)
-	_add_label(vbox, "avgWait", "• Chờ TB: -- s", 12, Color.WHITE)
-	_add_label(vbox, "efficiency", "• Hiệu suất: -- %", 12, Color.WHITE)
-	vbox.add_child(HSeparator.new())
+	# ╔══════════════════════════════════════════════════════════════╗
+	# ║  BOTTOM-LEFT: KPIs + PCE                                   ║
+	# ╚══════════════════════════════════════════════════════════════╝
+	var bl_panel: Panel = _make_panel.call(canvas, Vector2(10, 1080 - 170 - 10), Vector2(320, 170))
+	# Anchor bottom-left
+	bl_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	bl_panel.set_anchor(SIDE_TOP, 1.0)
+	bl_panel.set_anchor(SIDE_BOTTOM, 1.0)
+	bl_panel.offset_left = 10
+	bl_panel.offset_right = 330
+	bl_panel.offset_top = -180
+	bl_panel.offset_bottom = -10
+	var bl_vbox: VBoxContainer = _make_vbox.call(bl_panel, 10.0)
 	
-	# AI Optimizer
-	_add_label(vbox, "sec_ai", "🤖 AI OPTIMIZER (4 PHA)", 13, Color(0.8, 0.85, 1.0))
+	_add_label(bl_vbox, "sec_kpi", "📊 KPI — HCM 2010", 13, Color(0.8, 0.85, 1.0))
+	_add_label(bl_vbox, "throughput", "• Thông lượng: -- PCU/ph", 11, Color.WHITE)
+	_add_label(bl_vbox, "avgWait", "• Chờ TB: -- s", 11, Color.WHITE)
+	_add_label(bl_vbox, "efficiency", "• Hiệu suất: -- %", 11, Color.WHITE)
+	bl_vbox.add_child(HSeparator.new())
+	_add_label(bl_vbox, "pce_info", "🏍️ PCE: Xe máy 0.25 PCU | Mix 65%", 10, Color(0.5, 0.6, 0.7))
+	
+	# ╔══════════════════════════════════════════════════════════════╗
+	# ║  BOTTOM-RIGHT: AI Optimizer + Controls                     ║
+	# ╚══════════════════════════════════════════════════════════════╝
+	var br_panel: Panel = _make_panel.call(canvas, Vector2(1920 - 380 - 10, 1080 - 310 - 10), Vector2(380, 310))
+	# Anchor bottom-right
+	br_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	br_panel.set_anchor(SIDE_LEFT, 1.0)
+	br_panel.set_anchor(SIDE_RIGHT, 1.0)
+	br_panel.set_anchor(SIDE_TOP, 1.0)
+	br_panel.set_anchor(SIDE_BOTTOM, 1.0)
+	br_panel.offset_left = -390
+	br_panel.offset_right = -10
+	br_panel.offset_top = -320
+	br_panel.offset_bottom = -10
+	var br_vbox: VBoxContainer = _make_vbox.call(br_panel, 10.0)
+	
+	_add_label(br_vbox, "sec_ai", "🤖 AI OPTIMIZER (4 PHA)", 13, Color(0.8, 0.85, 1.0))
 	for p in ["PH1", "PH2", "PH3", "PH4"]:
-		_add_label(vbox, "ai_" + p, "  " + PHASE_NAMES[p] + ": --s", 11, Color(0.7, 0.7, 0.7))
-	_add_label(vbox, "improvement", "📈 Cải thiện: -- %", 12, Color.WHITE)
-	_add_label(vbox, "auto_apply_status", "🤖 Auto-Apply: ON", 12, Color(0.3, 0.9, 0.4))
-	vbox.add_child(HSeparator.new())
-	
-	# PCE Info
-	_add_label(vbox, "sec_pce", "🏍️ PCE (Giao thông VN)", 13, Color(0.8, 0.85, 1.0))
-	_add_label(vbox, "pce_info", "• Xe máy: 0.25 PCU | Mix: 65% moto", 11, Color(0.6, 0.7, 0.8))
-	vbox.add_child(HSeparator.new())
-	
-	# Controls
-	_add_label(vbox, "sec_ctrl", "🎛️ CONTROLS", 13, Color(0.8, 0.85, 1.0))
+		_add_label(br_vbox, "ai_" + p, "  " + PHASE_NAMES[p] + ": --s", 11, Color(0.7, 0.7, 0.7))
+	_add_label(br_vbox, "improvement", "📈 Cải thiện: -- %", 11, Color.WHITE)
+	_add_label(br_vbox, "auto_apply_status", "🤖 Auto-Apply: ON", 11, Color(0.3, 0.9, 0.4))
+	br_vbox.add_child(HSeparator.new())
 	
 	# Speed buttons
 	var speed_hbox := HBoxContainer.new()
 	speed_hbox.add_theme_constant_override("separation", 5)
-	vbox.add_child(speed_hbox)
+	br_vbox.add_child(speed_hbox)
 	
 	for spd in [1, 5, 10, 30, 60]:
 		var btn := Button.new()
@@ -541,7 +573,7 @@ func _build_dashboard():
 	# Jump buttons
 	var jump_hbox := HBoxContainer.new()
 	jump_hbox.add_theme_constant_override("separation", 5)
-	vbox.add_child(jump_hbox)
+	br_vbox.add_child(jump_hbox)
 	
 	for hr in [7, 8, 12, 17, 22]:
 		var btn := Button.new()
@@ -553,7 +585,7 @@ func _build_dashboard():
 	# Apply AI + Toggle Auto
 	var ctrl_hbox := HBoxContainer.new()
 	ctrl_hbox.add_theme_constant_override("separation", 5)
-	vbox.add_child(ctrl_hbox)
+	br_vbox.add_child(ctrl_hbox)
 	
 	var btn_apply := Button.new()
 	btn_apply.text = "ÁP DỤNG AI"
@@ -629,7 +661,7 @@ func update_twin_state(data: Dictionary):
 		traffic_data["fidelity"] = data["fidelity"]
 		var fid: float = data["fidelity"]
 		if _labels.has("fidelity"):
-			_labels["fidelity"].text = "• Độ chính xác: " + str(snapped(fid, 0.1)) + " %"
+			_labels["fidelity"].text = "🎯 Fidelity: " + str(snapped(fid, 0.1)) + " %"
 			var c := Color.GREEN if fid > 90.0 else (Color.YELLOW if fid > 70.0 else Color.RED)
 			_labels["fidelity"].add_theme_color_override("font_color", c)
 	
@@ -638,7 +670,18 @@ func update_twin_state(data: Dictionary):
 		traffic_data["sim_clock"] = data["sim_clock"]
 		var sc: Dictionary = data["sim_clock"]
 		if _labels.has("clock_time"):
-			_labels["clock_time"].text = "• " + str(sc.get("time_str", "??")) + " | Speed: " + str(sc.get("speed", 1)) + "x | Day " + str(sc.get("day", 1))
+			_labels["clock_time"].text = "🕐 " + str(sc.get("time_str", "??")) + " | Speed: " + str(sc.get("speed", 1)) + "x | Day " + str(sc.get("day", 1))
+	
+	# Phase info
+	if data.has("phase") and _labels.has("phase_info"):
+		var phase_name: String = PHASE_NAMES.get(str(data["phase"]), str(data["phase"]))
+		var time_left_str := "--"
+		# Get time_left from any green direction
+		for d in ALL_DIRS:
+			if traffic_data[d]["light"] == "XANH":
+				time_left_str = str(int(traffic_data[d]["time_left"]))
+				break
+		_labels["phase_info"].text = "💡 Pha: " + phase_name + " | Còn: " + time_left_str + "s"
 	
 	# Auto-apply
 	if data.has("auto_apply"):
