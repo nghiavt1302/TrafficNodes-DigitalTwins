@@ -11,6 +11,8 @@ const ROAD_LENGTH := 120.0     # Chiều dài mỗi nhánh
 const LANE_WIDTH := 5.0        # Chiều rộng 1 làn
 const INTERSECTION_SIZE := 15.0
 const ROAD_Y := 0.05           # Cao hơn mặt đất 1 chút
+const EXIT_DIST := 40.0        # Xe chạy ra xa bao nhiêu trước khi biến mất
+const CROSS_DURATION := 1.5    # Giây để xe băng qua giao lộ
 
 const DIR_NAMES := {
 	"NS": "Bắc-Nam", "NS_LEFT": "B-N rẽ trái",
@@ -35,6 +37,7 @@ var _vehicle_nodes: Dictionary = {}  # {dir: [Node3D]}
 var _traffic_light_meshes: Dictionary = {}  # {dir: MeshInstance3D}
 var _labels: Dictionary = {}
 var _road_materials: Dictionary = {}
+var _crossing: Array = []  # xe đang băng qua giao lộ: [{node,p0,p1,p2,t,dur}]
 
 func _ready():
 	_init_traffic_data()
@@ -63,8 +66,9 @@ func _init_traffic_data():
 		traffic_data["queue_counts"][d] = 0
 		traffic_data["velocity"][d] = 0.0
 
-func _process(_delta: float):
+func _process(delta: float):
 	_update_vehicles()
+	_update_crossing(delta)
 	_update_traffic_light_colors()
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -381,11 +385,11 @@ func _update_vehicles():
 			current.append(veh)
 			add_child(veh)
 		
-		# Xóa xe — CHỈ khi đèn XANH (xe được phép rời đi)
+		# Xe rời hàng — CHỈ khi đèn XANH → băng qua giao lộ (thẳng/rẽ trái)
 		if light_state == "XANH":
 			while current.size() > target and current.size() > 0:
 				var v: Node3D = current.pop_front()
-				v.queue_free()
+				_start_crossing(dir_key, v)
 		
 		# Trượt xe còn lại tiến lên vị trí mới (lerp mượt mà)
 		for i in range(current.size()):
@@ -451,121 +455,209 @@ func _get_vehicle_pos(dir_key: String, index: int) -> Vector3:
 	return Vector3.ZERO
 
 # ╔══════════════════════════════════════════════════════════════╗
+# ║  XE BĂNG QUA GIAO LỘ (thẳng qua + rẽ trái cong)             ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+func _start_crossing(dir_key: String, node: Node3D) -> void:
+	var path := _get_cross_path(dir_key)
+	node.position = path[0]
+	_crossing.append({
+		"node": node, "p0": path[0], "p1": path[1], "p2": path[2],
+		"t": 0.0, "dur": CROSS_DURATION,
+	})
+
+func _update_crossing(delta: float) -> void:
+	var still: Array = []
+	for c in _crossing:
+		c.t += delta / c.dur
+		if c.t >= 1.0:
+			c.node.queue_free()
+			continue
+		var pos := _bezier(c.p0, c.p1, c.p2, c.t)
+		c.node.position = pos
+		var tang := _bezier_tangent(c.p0, c.p1, c.p2, c.t)
+		if tang.length() > 0.001:
+			c.node.rotation_degrees.y = rad_to_deg(atan2(tang.x, tang.z))
+		still.append(c)
+	_crossing = still
+
+func _bezier(p0: Vector3, p1: Vector3, p2: Vector3, t: float) -> Vector3:
+	var u := 1.0 - t
+	return u * u * p0 + 2.0 * u * t * p1 + t * t * p2
+
+func _bezier_tangent(p0: Vector3, p1: Vector3, p2: Vector3, t: float) -> Vector3:
+	return 2.0 * (1.0 - t) * (p1 - p0) + 2.0 * t * (p2 - p1)
+
+func _get_cross_path(dir_key: String) -> Array:
+	"""Trả [p0, p1, p2] cho quadratic bezier. Thẳng: p1 = trung điểm."""
+	var y := ROAD_Y + 0.5
+	var h := INTERSECTION_SIZE / 2.0   # biên giao lộ = 7.5
+	var lw := LANE_WIDTH               # 5.0
+	var hw := LANE_WIDTH / 2.0         # 2.5 (làn rẽ trái)
+	var e := EXIT_DIST
+
+	var p0: Vector3
+	var p2: Vector3
+
+	match dir_key:
+		# ── Thẳng: đi qua ra nhánh đối diện (p1 = trung điểm → đường thẳng) ──
+		"NS":  p0 = Vector3(-lw, y, -h);  p2 = Vector3(-lw, y, e)
+		"SN":  p0 = Vector3(lw, y, h);    p2 = Vector3(lw, y, -e)
+		"EW":  p0 = Vector3(h, y, -lw);   p2 = Vector3(-e, y, -lw)
+		"WE":  p0 = Vector3(-h, y, lw);   p2 = Vector3(e, y, lw)
+		# ── Rẽ trái: cong 90° sang nhánh bên trái (p1 = góc quẹo) ──
+		"NS_LEFT": return [Vector3(-hw, y, -h), Vector3(-hw, y, hw), Vector3(e, y, hw)]
+		"SN_LEFT": return [Vector3(hw, y, h), Vector3(hw, y, -hw), Vector3(-e, y, -hw)]
+		"EW_LEFT": return [Vector3(h, y, -hw), Vector3(-hw, y, -hw), Vector3(-hw, y, e)]
+		"WE_LEFT": return [Vector3(-h, y, hw), Vector3(hw, y, hw), Vector3(hw, y, -e)]
+		_:         p0 = Vector3.ZERO; p2 = Vector3.ZERO
+
+	return [p0, (p0 + p2) * 0.5, p2]
+
+# ╔══════════════════════════════════════════════════════════════╗
 # ║  DASHBOARD UI (CanvasLayer overlay)                          ║
 # ╚══════════════════════════════════════════════════════════════╝
+
+const PANEL_W := 360
+const PANEL_MARGIN := 12
+const PANEL_TOP_ANCHOR := 0.4  # panel bắt đầu từ 40% chiều cao → chỉ chiếm nửa dưới
 
 func _build_dashboard():
 	var canvas := CanvasLayer.new()
 	canvas.name = "DashboardUI"
 	add_child(canvas)
-	
-	var panel := Panel.new()
-	panel.name = "DashPanel"
-	panel.size = Vector2(420, 720)
-	panel.position = Vector2(10, 10)
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.03, 0.04, 0.08, 0.88)
-	style.border_color = Color(0.2, 0.35, 0.7, 0.5)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(8)
-	panel.add_theme_stylebox_override("panel", style)
-	canvas.add_child(panel)
-	
-	var scroll := ScrollContainer.new()
-	scroll.size = Vector2(400, 700)
-	scroll.position = Vector2(10, 10)
-	panel.add_child(scroll)
-	
-	var vbox := VBoxContainer.new()
-	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	vbox.add_theme_constant_override("separation", 5)
-	scroll.add_child(vbox)
-	
-	# Title
-	_add_label(vbox, "title", "🚦 DIGITAL TWIN L4 PRO — COMMAND CENTER", 16, Color(0.6, 0.8, 1.0))
-	_add_label(vbox, "arch", "SUMO + 4-Phase NEMA + PCE VN + Auto-Apply AI", 10, Color(0.4, 0.55, 0.8))
-	vbox.add_child(HSeparator.new())
-	
+
+	# ── Panel TRÁI: Clock / Fidelity / Mật độ xe ──
+	var vbox_left := _make_dash_panel(canvas, "DashPanelLeft", false)
+
+	_add_label(vbox_left, "title", "🚦 DIGITAL TWIN L4 PRO — COMMAND CENTER", 16, Color(0.6, 0.8, 1.0))
+	_add_label(vbox_left, "arch", "SUMO + 4-Phase NEMA + PCE VN + Auto-Apply AI", 10, Color(0.4, 0.55, 0.8))
+	vbox_left.add_child(HSeparator.new())
+
 	# SimClock
-	_add_label(vbox, "sec_clock", "🕐 SIMULATION CLOCK", 13, Color(0.8, 0.85, 1.0))
-	_add_label(vbox, "clock_time", "• Thời gian: 07:30:00 | Speed: 1.0x | Day 1", 12, Color.WHITE)
-	vbox.add_child(HSeparator.new())
-	
+	_add_label(vbox_left, "sec_clock", "🕐 SIMULATION CLOCK", 13, Color(0.8, 0.85, 1.0))
+	_add_label(vbox_left, "clock_time", "• Thời gian: 07:30:00 | Speed: 1.0x | Day 1", 12, Color.WHITE)
+	vbox_left.add_child(HSeparator.new())
+
 	# Fidelity
-	_add_label(vbox, "sec_fidelity", "🎯 FIDELITY", 13, Color(0.8, 0.85, 1.0))
-	_add_label(vbox, "fidelity", "• Độ chính xác: -- %", 12, Color.WHITE)
-	vbox.add_child(HSeparator.new())
-	
+	_add_label(vbox_left, "sec_fidelity", "🎯 FIDELITY", 13, Color(0.8, 0.85, 1.0))
+	_add_label(vbox_left, "fidelity", "• Độ chính xác: -- %", 12, Color.WHITE)
+	vbox_left.add_child(HSeparator.new())
+
 	# Density (8 directions in 2 groups)
-	_add_label(vbox, "sec_density", "🚗 MẬT ĐỘ XE (8 hướng, 4 pha)", 13, Color(0.8, 0.85, 1.0))
+	_add_label(vbox_left, "sec_density", "🚗 MẬT ĐỘ XE (8 hướng, 4 pha)", 13, Color(0.8, 0.85, 1.0))
 	for d in ALL_DIRS:
 		var name_str: String = DIR_NAMES.get(d, d)
-		_add_label(vbox, "d_" + d, "  " + name_str + ": --% | -- | ⏱ --s", 11, Color(0.7, 0.7, 0.7))
-	vbox.add_child(HSeparator.new())
-	
+		_add_label(vbox_left, "d_" + d, "  " + name_str + ": --% | -- | ⏱ --s", 11, Color(0.7, 0.7, 0.7))
+
+	# ── Panel PHẢI: KPI / AI / PCE / Controls ──
+	var vbox_right := _make_dash_panel(canvas, "DashPanelRight", true)
+
 	# KPIs
-	_add_label(vbox, "sec_kpi", "📊 KPI — HCM 2010", 13, Color(0.8, 0.85, 1.0))
-	_add_label(vbox, "throughput", "• Thông lượng: -- PCU/ph", 12, Color.WHITE)
-	_add_label(vbox, "avgWait", "• Chờ TB: -- s", 12, Color.WHITE)
-	_add_label(vbox, "efficiency", "• Hiệu suất: -- %", 12, Color.WHITE)
-	vbox.add_child(HSeparator.new())
-	
+	_add_label(vbox_right, "sec_kpi", "📊 KPI — HCM 2010", 13, Color(0.8, 0.85, 1.0))
+	_add_label(vbox_right, "throughput", "• Thông lượng: -- PCU/ph", 12, Color.WHITE)
+	_add_label(vbox_right, "avgWait", "• Chờ TB: -- s", 12, Color.WHITE)
+	_add_label(vbox_right, "efficiency", "• Hiệu suất: -- %", 12, Color.WHITE)
+	vbox_right.add_child(HSeparator.new())
+
 	# AI Optimizer
-	_add_label(vbox, "sec_ai", "🤖 AI OPTIMIZER (4 PHA)", 13, Color(0.8, 0.85, 1.0))
+	_add_label(vbox_right, "sec_ai", "🤖 AI OPTIMIZER (4 PHA)", 13, Color(0.8, 0.85, 1.0))
 	for p in ["PH1", "PH2", "PH3", "PH4"]:
-		_add_label(vbox, "ai_" + p, "  " + PHASE_NAMES[p] + ": --s", 11, Color(0.7, 0.7, 0.7))
-	_add_label(vbox, "improvement", "📈 Cải thiện: -- %", 12, Color.WHITE)
-	_add_label(vbox, "auto_apply_status", "🤖 Auto-Apply: ON", 12, Color(0.3, 0.9, 0.4))
-	vbox.add_child(HSeparator.new())
-	
+		_add_label(vbox_right, "ai_" + p, "  " + PHASE_NAMES[p] + ": --s", 11, Color(0.7, 0.7, 0.7))
+	_add_label(vbox_right, "improvement", "📈 Cải thiện: -- %", 12, Color.WHITE)
+	_add_label(vbox_right, "auto_apply_status", "🤖 Auto-Apply: ON", 12, Color(0.3, 0.9, 0.4))
+	vbox_right.add_child(HSeparator.new())
+
 	# PCE Info
-	_add_label(vbox, "sec_pce", "🏍️ PCE (Giao thông VN)", 13, Color(0.8, 0.85, 1.0))
-	_add_label(vbox, "pce_info", "• Xe máy: 0.25 PCU | Mix: 65% moto", 11, Color(0.6, 0.7, 0.8))
-	vbox.add_child(HSeparator.new())
-	
+	_add_label(vbox_right, "sec_pce", "🏍️ PCE (Giao thông VN)", 13, Color(0.8, 0.85, 1.0))
+	_add_label(vbox_right, "pce_info", "• Xe máy: 0.25 PCU | Mix: 65% moto", 11, Color(0.6, 0.7, 0.8))
+	vbox_right.add_child(HSeparator.new())
+
 	# Controls
-	_add_label(vbox, "sec_ctrl", "🎛️ CONTROLS", 13, Color(0.8, 0.85, 1.0))
-	
+	_add_label(vbox_right, "sec_ctrl", "🎛️ CONTROLS", 13, Color(0.8, 0.85, 1.0))
+
 	# Speed buttons
 	var speed_hbox := HBoxContainer.new()
 	speed_hbox.add_theme_constant_override("separation", 5)
-	vbox.add_child(speed_hbox)
-	
+	vbox_right.add_child(speed_hbox)
+
 	for spd in [1, 5, 10, 30, 60]:
 		var btn := Button.new()
 		btn.text = str(spd) + "x"
 		btn.custom_minimum_size = Vector2(55, 32)
 		btn.pressed.connect(_on_speed_button.bind(spd))
 		speed_hbox.add_child(btn)
-	
+
 	# Jump buttons
 	var jump_hbox := HBoxContainer.new()
 	jump_hbox.add_theme_constant_override("separation", 5)
-	vbox.add_child(jump_hbox)
-	
+	vbox_right.add_child(jump_hbox)
+
 	for hr in [7, 8, 12, 17, 22]:
 		var btn := Button.new()
 		btn.text = str(hr) + ":00"
 		btn.custom_minimum_size = Vector2(55, 32)
 		btn.pressed.connect(_on_jump_button.bind(hr))
 		jump_hbox.add_child(btn)
-	
+
 	# Apply AI + Toggle Auto
 	var ctrl_hbox := HBoxContainer.new()
 	ctrl_hbox.add_theme_constant_override("separation", 5)
-	vbox.add_child(ctrl_hbox)
-	
+	vbox_right.add_child(ctrl_hbox)
+
 	var btn_apply := Button.new()
 	btn_apply.text = "ÁP DỤNG AI"
 	btn_apply.custom_minimum_size = Vector2(120, 36)
 	btn_apply.pressed.connect(_on_apply_pressed)
 	ctrl_hbox.add_child(btn_apply)
-	
+
 	var btn_toggle := Button.new()
 	btn_toggle.text = "TOGGLE AUTO"
 	btn_toggle.custom_minimum_size = Vector2(120, 36)
 	btn_toggle.pressed.connect(_on_toggle_auto_pressed)
 	ctrl_hbox.add_child(btn_toggle)
+
+func _make_dash_panel(canvas: CanvasLayer, node_name: String, anchor_right: bool) -> VBoxContainer:
+	"""Tạo 1 panel neo trái hoặc phải, tự bám mép khi resize. Trả VBox chứa nội dung."""
+	var panel := Panel.new()
+	panel.name = node_name
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.03, 0.04, 0.08, 0.88)
+	style.border_color = Color(0.2, 0.35, 0.7, 0.5)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(8)
+	panel.add_theme_stylebox_override("panel", style)
+
+	# Neo nửa dưới màn hình (chừa đường ngang Đông-Tây phía trên), bám mép trái/phải
+	panel.anchor_top = PANEL_TOP_ANCHOR
+	panel.anchor_bottom = 1.0
+	panel.offset_top = 0
+	panel.offset_bottom = -PANEL_MARGIN
+	if anchor_right:
+		panel.anchor_left = 1.0
+		panel.anchor_right = 1.0
+		panel.offset_left = -(PANEL_W + PANEL_MARGIN)
+		panel.offset_right = -PANEL_MARGIN
+	else:
+		panel.anchor_left = 0.0
+		panel.anchor_right = 0.0
+		panel.offset_left = PANEL_MARGIN
+		panel.offset_right = PANEL_MARGIN + PANEL_W
+	canvas.add_child(panel)
+
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scroll.offset_left = 10
+	scroll.offset_top = 10
+	scroll.offset_right = -10
+	scroll.offset_bottom = -10
+	panel.add_child(scroll)
+
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 5)
+	scroll.add_child(vbox)
+	return vbox
 
 func _add_label(parent: Control, key: String, text: String, size: int, color: Color):
 	var lbl := Label.new()

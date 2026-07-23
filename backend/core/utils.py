@@ -7,6 +7,7 @@ Chứa các hàm dùng chung giữa các module, tránh duplicate code.
 - Clamping utility
 - Queue capacity helper (through vs left-turn)
 """
+from __future__ import annotations
 
 import logging
 from config import HOUR_MULTIPLIER_ANCHORS, QUEUE_CAPACITY, QUEUE_CAPACITY_LEFT, LEFT_TURN_DIRECTIONS
