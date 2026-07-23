@@ -19,6 +19,7 @@ Tham chiếu:
   - HCM 6th Edition, Chapter 19: Saturation Flow Rate
   - ISO 23247: Digital Twin Framework
 """
+from __future__ import annotations
 
 import math
 import random
