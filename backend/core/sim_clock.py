@@ -11,6 +11,7 @@ Tham chiếu:
   - Tách wall clock khỏi simulation time là practice chuẩn
     trong mọi simulation engine (SUMO, Vissim, AnyLogic, etc.)
 """
+from __future__ import annotations
 
 import logging
 

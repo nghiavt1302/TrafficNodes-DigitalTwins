@@ -11,6 +11,7 @@ Tham chiếu:
   - HCM 6th Edition, Chapter 19: Saturation Flow Rate
   - Greenshields' fundamental diagram (flow-density)
 """
+from __future__ import annotations
 
 import random
 

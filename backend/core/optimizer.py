@@ -16,6 +16,7 @@ Tham chiếu:
   - HCM Saturation Flow Model
   - Nelder-Mead simplex method
 """
+from __future__ import annotations
 
 from dataclasses import dataclass
 

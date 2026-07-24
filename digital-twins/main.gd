@@ -11,6 +11,24 @@ const ROAD_LENGTH := 120.0     # Chiều dài mỗi nhánh
 const LANE_WIDTH := 5.0        # Chiều rộng 1 làn
 const INTERSECTION_SIZE := 15.0
 const ROAD_Y := 0.05           # Cao hơn mặt đất 1 chút
+const EXIT_DIST := 40.0        # Xe chạy ra xa bao nhiêu trước khi biến mất
+const CROSS_DURATION := 1.5    # Giây để xe băng qua giao lộ
+const RELEASE_INTERVAL := 0.8  # Nhịp thả xe khi đèn xanh (mọi hướng xanh thả đồng thời)
+const VEH_Y := ROAD_Y + 0.06   # Độ cao đặt xe (đáy xe sát mặt đường)
+
+# --- Model xe 3D (Kenney Car Kit, CC0) ---
+const MODEL_DIR := "res://assets/car-kit/Models/GLB format/"
+const MODEL_YAW_OFFSET := 0.0    # Kenney xe mũi +Z sẵn. Nếu ngược đầu → đổi 180.
+const CAR_MODELS := ["sedan", "suv", "taxi", "hatchback-sports", "sedan-sports", "van", "police"]
+const TRUCK_MODELS := ["truck", "delivery", "garbage-truck", "firetruck", "delivery-flat", "ambulance"]
+const CAR_SCALE := 2.0
+const TRUCK_SCALE := 1.8
+
+# --- Xe máy (Poly by Google, CC-BY) — auto-scale theo chiều dài mục tiêu ---
+const BIKE_DIR := "res://assets/bikes/"
+const BIKE_MODELS := ["motorcycle", "motorcycle2", "motorcycle3"]
+const BIKE_LEN := 3.0            # chiều dài mục tiêu của xe máy (đơn vị world)
+const BIKE_YAW_OFFSET := 0.0     # tinh chỉnh thêm nếu cần (offset chính suy tự động từ trục dài model)
 
 const DIR_NAMES := {
 	"NS": "Bắc-Nam", "NS_LEFT": "B-N rẽ trái",
@@ -35,9 +53,12 @@ var _vehicle_nodes: Dictionary = {}  # {dir: [Node3D]}
 var _traffic_light_meshes: Dictionary = {}  # {dir: MeshInstance3D}
 var _labels: Dictionary = {}
 var _road_materials: Dictionary = {}
+var _crossing: Array = []  # xe đang băng qua giao lộ: [{node,p0,p1,p2,t,dur}]
+var _release_timer: float = 0.0  # đồng hồ nhịp thả xe (đồng bộ mọi hướng xanh)
 
 func _ready():
 	_init_traffic_data()
+	_build_lighting()
 	_build_ground()
 	_build_roads()
 	_build_intersection()
@@ -63,13 +84,35 @@ func _init_traffic_data():
 		traffic_data["queue_counts"][d] = 0
 		traffic_data["velocity"][d] = 0.0
 
-func _process(_delta: float):
+func _process(delta: float):
 	_update_vehicles()
+	_release_green_vehicles(delta)
+	_update_crossing(delta)
 	_update_traffic_light_colors()
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  XÂY DỰNG MÔI TRƯỜNG 3D                                    ║
 # ╚══════════════════════════════════════════════════════════════╝
+
+func _build_lighting():
+	# Đèn mặt trời (định hướng) — chiếu sáng toàn cảnh
+	var sun := DirectionalLight3D.new()
+	sun.name = "Sun"
+	sun.rotation_degrees = Vector3(-55, -40, 0)
+	sun.light_energy = 1.3
+	add_child(sun)
+
+	# Ánh sáng môi trường (ambient) — tránh model tối/đen
+	var we := WorldEnvironment.new()
+	we.name = "WorldEnv"
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0.10, 0.12, 0.16)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(0.65, 0.70, 0.80)
+	env.ambient_light_energy = 1.0
+	we.environment = env
+	add_child(we)
 
 func _build_ground():
 	var ground := CSGBox3D.new()
@@ -380,56 +423,154 @@ func _update_vehicles():
 			var veh := _create_vehicle(dir_key, current.size())
 			current.append(veh)
 			add_child(veh)
-		
-		# Xóa xe — CHỈ khi đèn XANH (xe được phép rời đi)
-		if light_state == "XANH":
-			while current.size() > target and current.size() > 0:
-				var v: Node3D = current.pop_front()
-				v.queue_free()
-		
+
+		# Xe rời hàng do nhịp thả (_release_green_vehicles), không xử lý ở đây.
 		# Trượt xe còn lại tiến lên vị trí mới (lerp mượt mà)
 		for i in range(current.size()):
 			var new_pos := _get_vehicle_pos(dir_key, i)
 			var veh: Node3D = current[i]
 			veh.position = veh.position.lerp(new_pos, 0.15)
 
+func _release_green_vehicles(delta: float) -> void:
+	"""Nhịp thả xe đồng bộ: mỗi RELEASE_INTERVAL, MỌI hướng đang XANH cùng
+	thả 1 xe đầu hàng băng qua giao lộ → 2 hướng cùng pha chạy đồng thời."""
+	_release_timer += delta
+	if _release_timer < RELEASE_INTERVAL:
+		return
+	_release_timer = 0.0
+	for dir_key in ALL_DIRS:
+		if traffic_data[dir_key].get("light", "DO") != "XANH":
+			continue
+		var current: Array = _vehicle_nodes[dir_key]
+		if current.size() > 0:
+			var v: Node3D = current.pop_front()
+			_start_crossing(dir_key, v)
+
 func _create_vehicle(dir_key: String, index: int) -> Node3D:
-	var is_moto := randf() < 0.65
-	var veh := CSGBox3D.new()
-	veh.name = "Veh_%s_%d" % [dir_key, index]
-	
-	var mat := StandardMaterial3D.new()
-	mat.emission_enabled = true
-	mat.emission_energy_multiplier = 0.4
-	
-	if is_moto:
-		veh.size = Vector3(0.6, 0.5, 1.8)
-		var hue := randf()
-		mat.albedo_color = Color.from_hsv(hue, 0.7, 0.9)
-		mat.emission = Color.from_hsv(hue, 0.5, 0.3)
+	# Pivot = gốc xe (đáy sát đất, mũi hướng +Z). Model/CSG gắn vào trong.
+	var pivot := Node3D.new()
+	pivot.name = "Veh_%s_%d" % [dir_key, index]
+
+	# Phân loại theo tỷ lệ giao thông VN: 65% moto, 25% ôtô con, 10% xe lớn
+	var r := randf()
+	if r < 0.65:
+		_attach_bike(pivot)
+	elif r < 0.90:
+		_attach_model(pivot, CAR_MODELS[randi() % CAR_MODELS.size()], CAR_SCALE)
 	else:
-		veh.size = Vector3(1.8, 0.7, 4.2)
-		var colors := [
-			Color(0.8, 0.2, 0.2), Color(0.2, 0.4, 0.8),
-			Color(0.9, 0.9, 0.9), Color(0.15, 0.15, 0.15),
-			Color(0.7, 0.7, 0.1),
-		]
-		mat.albedo_color = colors[randi() % colors.size()]
-		mat.emission = mat.albedo_color * 0.2
-	
-	veh.material = mat
-	veh.position = _get_vehicle_pos(dir_key, index)
-	
-	# Xoay xe hướng Đông-Tây cho nằm ngang theo đường
-	if dir_key in ["EW", "EW_LEFT", "WE", "WE_LEFT"]:
-		veh.rotation_degrees.y = 90.0
-	
-	return veh
+		_attach_model(pivot, TRUCK_MODELS[randi() % TRUCK_MODELS.size()], TRUCK_SCALE)
+
+	pivot.position = _get_vehicle_pos(dir_key, index)
+	pivot.rotation_degrees.y = _dir_heading(dir_key)
+	return pivot
+
+func _attach_model(pivot: Node3D, model_name: String, model_scale: float) -> void:
+	"""Gắn model GLB (Kenney) vào pivot; fallback moto nếu load lỗi."""
+	var scene: Resource = load(MODEL_DIR + model_name + ".glb")
+	if scene == null:
+		_build_moto_csg(pivot)
+		return
+	var m: Node3D = scene.instantiate()
+	m.scale = Vector3(model_scale, model_scale, model_scale)
+	m.rotation_degrees.y = MODEL_YAW_OFFSET
+	pivot.add_child(m)
+
+func _attach_bike(pivot: Node3D) -> void:
+	"""Gắn model xe máy GLB thật, auto-scale về BIKE_LEN. Fallback CSG nếu lỗi."""
+	var model_name: String = BIKE_MODELS[randi() % BIKE_MODELS.size()]
+	var scene: Resource = load(BIKE_DIR + model_name + ".glb")
+	if scene == null:
+		_build_moto_csg(pivot)
+		return
+	var m: Node3D = scene.instantiate()
+	var aabb := _node_aabb(m)
+	var longest: float = max(aabb.size.x, aabb.size.z)
+	var s := 1.0
+	if longest > 0.001:
+		s = BIKE_LEN / longest
+	m.scale = Vector3(s, s, s)
+	# Chuẩn hóa mũi xe về +Z: model dài theo X → xoay -90; dài theo Z → giữ nguyên
+	var yaw := BIKE_YAW_OFFSET
+	if aabb.size.x > aabb.size.z:
+		yaw += -90.0
+	m.rotation_degrees.y = yaw
+	m.position.y = -aabb.position.y * s   # đáy xe lên mặt đường
+	_relight_meshes(m)   # giữ màu gốc, khử metallic gây đen
+	pivot.add_child(m)
+
+func _relight_meshes(root: Node3D) -> void:
+	"""Giữ màu/texture gốc nhưng đặt metallic=0, roughness cao → hết đen."""
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if n is MeshInstance3D:
+			var mi := n as MeshInstance3D
+			if mi.mesh == null:
+				continue
+			for i in range(mi.mesh.get_surface_count()):
+				var base := mi.get_active_material(i)
+				var mat: StandardMaterial3D
+				if base is StandardMaterial3D:
+					mat = (base as StandardMaterial3D).duplicate()
+				else:
+					mat = StandardMaterial3D.new()
+				mat.metallic = 0.0
+				mat.roughness = 0.9
+				mi.set_surface_override_material(i, mat)
+
+func _node_aabb(root: Node3D) -> AABB:
+	"""Gộp AABB mọi mesh trong cây (tọa độ local của root)."""
+	var acc := AABB()
+	var first := true
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if n is VisualInstance3D:
+			var a: AABB = n.get_aabb()
+			# nhân dồn transform từ n lên tới root
+			var t := Transform3D.IDENTITY
+			var cur: Node = n
+			while cur != root and cur != null:
+				t = (cur as Node3D).transform * t
+				cur = cur.get_parent()
+			a = t * a
+			if first:
+				acc = a
+				first = false
+			else:
+				acc = acc.merge(a)
+	if first:
+		return AABB(Vector3.ZERO, Vector3.ONE)
+	return acc
+
+func _build_moto_csg(pivot: Node3D) -> void:
+	"""Fallback: xe máy low-poly bằng CSG (khi model lỗi)."""
+	var hue := randf()
+	var body := CSGBox3D.new()
+	body.size = Vector3(0.5, 0.45, 1.7)
+	body.position = Vector3(0, 0.45, 0)
+	var bmat := StandardMaterial3D.new()
+	bmat.albedo_color = Color.from_hsv(hue, 0.75, 0.95)
+	body.material = bmat
+	pivot.add_child(body)
+
+func _dir_heading(dir_key: String) -> float:
+	"""Góc quay Y (độ) theo hướng đi của làn: 0=+Z, 180=-Z, 90=+X, -90=-X."""
+	match dir_key:
+		"NS", "NS_LEFT": return 0.0
+		"SN", "SN_LEFT": return 180.0
+		"WE", "WE_LEFT": return 90.0
+		"EW", "EW_LEFT": return -90.0
+	return 0.0
 
 func _get_vehicle_pos(dir_key: String, index: int) -> Vector3:
-	var spacing := 5.5
+	var spacing := 8.0
 	var offset := (index + 1) * spacing
-	var lane_y := ROAD_Y + 0.5
+	var lane_y := VEH_Y
 	
 	match dir_key:
 		"NS":
@@ -451,8 +592,72 @@ func _get_vehicle_pos(dir_key: String, index: int) -> Vector3:
 	return Vector3.ZERO
 
 # ╔══════════════════════════════════════════════════════════════╗
+# ║  XE BĂNG QUA GIAO LỘ (thẳng qua + rẽ trái cong)             ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+func _start_crossing(dir_key: String, node: Node3D) -> void:
+	var path := _get_cross_path(dir_key)
+	node.position = path[0]
+	_crossing.append({
+		"node": node, "p0": path[0], "p1": path[1], "p2": path[2],
+		"t": 0.0, "dur": CROSS_DURATION,
+	})
+
+func _update_crossing(delta: float) -> void:
+	var still: Array = []
+	for c in _crossing:
+		c.t += delta / c.dur
+		if c.t >= 1.0:
+			c.node.queue_free()
+			continue
+		var pos := _bezier(c.p0, c.p1, c.p2, c.t)
+		c.node.position = pos
+		var tang := _bezier_tangent(c.p0, c.p1, c.p2, c.t)
+		if tang.length() > 0.001:
+			c.node.rotation_degrees.y = rad_to_deg(atan2(tang.x, tang.z))
+		still.append(c)
+	_crossing = still
+
+func _bezier(p0: Vector3, p1: Vector3, p2: Vector3, t: float) -> Vector3:
+	var u := 1.0 - t
+	return u * u * p0 + 2.0 * u * t * p1 + t * t * p2
+
+func _bezier_tangent(p0: Vector3, p1: Vector3, p2: Vector3, t: float) -> Vector3:
+	return 2.0 * (1.0 - t) * (p1 - p0) + 2.0 * t * (p2 - p1)
+
+func _get_cross_path(dir_key: String) -> Array:
+	"""Trả [p0, p1, p2] cho quadratic bezier. Thẳng: p1 = trung điểm."""
+	var y := VEH_Y
+	var h := INTERSECTION_SIZE / 2.0   # biên giao lộ = 7.5
+	var lw := LANE_WIDTH               # 5.0
+	var hw := LANE_WIDTH / 2.0         # 2.5 (làn rẽ trái)
+	var e := EXIT_DIST
+
+	var p0: Vector3
+	var p2: Vector3
+
+	match dir_key:
+		# ── Thẳng: đi qua ra nhánh đối diện (p1 = trung điểm → đường thẳng) ──
+		"NS":  p0 = Vector3(-lw, y, -h);  p2 = Vector3(-lw, y, e)
+		"SN":  p0 = Vector3(lw, y, h);    p2 = Vector3(lw, y, -e)
+		"EW":  p0 = Vector3(h, y, -lw);   p2 = Vector3(-e, y, -lw)
+		"WE":  p0 = Vector3(-h, y, lw);   p2 = Vector3(e, y, lw)
+		# ── Rẽ trái: cong 90° sang nhánh bên trái (p1 = góc quẹo) ──
+		"NS_LEFT": return [Vector3(-hw, y, -h), Vector3(-hw, y, hw), Vector3(e, y, hw)]
+		"SN_LEFT": return [Vector3(hw, y, h), Vector3(hw, y, -hw), Vector3(-e, y, -hw)]
+		"EW_LEFT": return [Vector3(h, y, -hw), Vector3(-hw, y, -hw), Vector3(-hw, y, e)]
+		"WE_LEFT": return [Vector3(-h, y, hw), Vector3(hw, y, hw), Vector3(hw, y, -e)]
+		_:         p0 = Vector3.ZERO; p2 = Vector3.ZERO
+
+	return [p0, (p0 + p2) * 0.5, p2]
+
+# ╔══════════════════════════════════════════════════════════════╗
 # ║  DASHBOARD UI (CanvasLayer overlay)                          ║
 # ╚══════════════════════════════════════════════════════════════╝
+
+const PANEL_W := 360
+const PANEL_MARGIN := 12
+const PANEL_TOP_ANCHOR := 0.4  # panel bắt đầu từ 40% chiều cao → chỉ chiếm nửa dưới
 
 func _build_dashboard():
 	var canvas := CanvasLayer.new()
@@ -562,14 +767,14 @@ func _build_dashboard():
 	var speed_hbox := HBoxContainer.new()
 	speed_hbox.add_theme_constant_override("separation", 5)
 	br_vbox.add_child(speed_hbox)
-	
+		
 	for spd in [1, 5, 10, 30, 60]:
 		var btn := Button.new()
 		btn.text = str(spd) + "x"
 		btn.custom_minimum_size = Vector2(55, 32)
 		btn.pressed.connect(_on_speed_button.bind(spd))
 		speed_hbox.add_child(btn)
-	
+
 	# Jump buttons
 	var jump_hbox := HBoxContainer.new()
 	jump_hbox.add_theme_constant_override("separation", 5)
@@ -581,7 +786,7 @@ func _build_dashboard():
 		btn.custom_minimum_size = Vector2(55, 32)
 		btn.pressed.connect(_on_jump_button.bind(hr))
 		jump_hbox.add_child(btn)
-	
+
 	# Apply AI + Toggle Auto
 	var ctrl_hbox := HBoxContainer.new()
 	ctrl_hbox.add_theme_constant_override("separation", 5)
@@ -592,12 +797,54 @@ func _build_dashboard():
 	btn_apply.custom_minimum_size = Vector2(120, 36)
 	btn_apply.pressed.connect(_on_apply_pressed)
 	ctrl_hbox.add_child(btn_apply)
-	
+
 	var btn_toggle := Button.new()
 	btn_toggle.text = "TOGGLE AUTO"
 	btn_toggle.custom_minimum_size = Vector2(120, 36)
 	btn_toggle.pressed.connect(_on_toggle_auto_pressed)
 	ctrl_hbox.add_child(btn_toggle)
+
+func _make_dash_panel(canvas: CanvasLayer, node_name: String, anchor_right: bool) -> VBoxContainer:
+	"""Tạo 1 panel neo trái hoặc phải, tự bám mép khi resize. Trả VBox chứa nội dung."""
+	var panel := Panel.new()
+	panel.name = node_name
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.03, 0.04, 0.08, 0.88)
+	style.border_color = Color(0.2, 0.35, 0.7, 0.5)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(8)
+	panel.add_theme_stylebox_override("panel", style)
+
+	# Neo nửa dưới màn hình (chừa đường ngang Đông-Tây phía trên), bám mép trái/phải
+	panel.anchor_top = PANEL_TOP_ANCHOR
+	panel.anchor_bottom = 1.0
+	panel.offset_top = 0
+	panel.offset_bottom = -PANEL_MARGIN
+	if anchor_right:
+		panel.anchor_left = 1.0
+		panel.anchor_right = 1.0
+		panel.offset_left = -(PANEL_W + PANEL_MARGIN)
+		panel.offset_right = -PANEL_MARGIN
+	else:
+		panel.anchor_left = 0.0
+		panel.anchor_right = 0.0
+		panel.offset_left = PANEL_MARGIN
+		panel.offset_right = PANEL_MARGIN + PANEL_W
+	canvas.add_child(panel)
+
+	var scroll := ScrollContainer.new()
+	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scroll.offset_left = 10
+	scroll.offset_top = 10
+	scroll.offset_right = -10
+	scroll.offset_bottom = -10
+	panel.add_child(scroll)
+
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 5)
+	scroll.add_child(vbox)
+	return vbox
 
 func _add_label(parent: Control, key: String, text: String, size: int, color: Color):
 	var lbl := Label.new()
