@@ -273,3 +273,19 @@ ALLOWED_ORIGINS: list[str] = [
 
 # Version
 VERSION: str = "5.0.0"
+
+# ============================================================
+# 10. THỜI TIẾT & NGÀY / ĐÊM
+# ============================================================
+# Trạng thái thời tiết
+WEATHER_CLEAR: str = "clear"
+WEATHER_RAIN: str = "rain"
+
+# Ảnh hưởng khi trời MƯA (đường trơn → dòng bão hòa giảm, xe chạy chậm).
+# HCM/nghiên cứu thực địa: mưa làm saturation flow giảm ~10–30%.
+RAIN_SATURATION_FACTOR: float = 0.75   # 0.75 = giảm 25% năng lực giải tỏa khi mưa
+
+# Ranh giới ngày/đêm (giờ mô phỏng) — dùng cho hiệu ứng ánh sáng phía Godot.
+# (Tính toán gradient nằm ở frontend; backend chỉ phát trạng thái weather.)
+DAWN_HOUR: int = 6    # ~6h trời bắt đầu sáng
+DUSK_HOUR: int = 18   # ~18h trời bắt đầu tối

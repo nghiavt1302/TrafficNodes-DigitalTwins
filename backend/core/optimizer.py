@@ -101,6 +101,7 @@ def compute_cost_j(
     weights: dict[str, float] = PHASE_WEIGHTS,
     lam: float = LAMBDA,
     s: float = S_NORMALIZE,
+    sat_factor: float = 1.0,
 ) -> float:
     """
     Hàm mục tiêu J(u) — 4 pha NEMA, có PCE.
@@ -132,6 +133,7 @@ def compute_cost_j(
             s_per_sec = SATURATION_FLOW_RATE / 3600.0 / capacity
             if is_left:
                 s_per_sec *= LEFT_TURN_SATURATION_FACTOR
+            s_per_sec *= sat_factor   # Thời tiết: mưa giảm năng lực giải tỏa
 
             utilization = min(1.0, d_eff / 0.3)
             clearance_rate = s_per_sec * utilization
@@ -183,24 +185,39 @@ def optimize(
     forecast_values: dict[str, float],
     current_green_times: dict[str, int],
     hour: int = 12,
+    sat_factor: float = 1.0,
 ) -> OptimizationResult:
     """
     Tìm phân bổ thời gian xanh tối ưu cho 4 pha (4 biến).
 
     Multi-start Nelder-Mead (3 starting points).
+
+    sat_factor: hệ số dòng bão hòa theo thời tiết (mưa < 1.0) — để AI biết
+    năng lực giải tỏa giảm mà chia xanh phù hợp.
     """
     d_eff = compute_effective_density(current_densities, forecast_values)
-    j_current = compute_cost_j(d_eff, current_green_times, current_green_times, hour)
+    j_current = compute_cost_j(d_eff, current_green_times, current_green_times, hour, sat_factor=sat_factor)
 
-    # Bounds cho từng pha (rẽ trái vs thẳng khác nhau)
-    bounds_info = [(float(_get_min_green(p)), float(_get_max_green(p))) for p in PHASE_IDS]
+    # ── Co chu kỳ theo giờ (ngày/đêm) ──
+    # Đêm vắng → trần xanh thấp → chu kỳ + đèn đỏ ngắn hẳn.
+    # Cao điểm → cho phép chu kỳ dài. Suy từ hệ số giờ M(h) ∈ ~[0.12, 2.0].
+    m_h = get_hour_multiplier(hour)
+    cycle_scale = max(0.35, min(1.0, 0.42 + 0.30 * m_h))
+
+    # Bounds cho từng pha (rẽ trái vs thẳng khác nhau), trần co theo giờ.
+    # Luôn giữ trần ≥ min để tránh bound rỗng.
+    bounds_info = []
+    for p in PHASE_IDS:
+        lo = float(_get_min_green(p))
+        hi = max(lo, float(_get_max_green(p)) * cycle_scale)
+        bounds_info.append((lo, hi))
 
     def objective(u_vec):
         cand = {}
         for i, p in enumerate(PHASE_IDS):
             lo, hi = bounds_info[i]
             cand[p] = max(lo, min(hi, u_vec[i]))
-        return compute_cost_j(d_eff, cand, current_green_times, hour)
+        return compute_cost_j(d_eff, cand, current_green_times, hour, sat_factor=sat_factor)
 
     # Multi-start: 3 starting points
     total_budget = sum(current_green_times.get(p, 25) for p in PHASE_IDS)

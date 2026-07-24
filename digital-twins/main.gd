@@ -56,9 +56,23 @@ var _road_materials: Dictionary = {}
 var _crossing: Array = []  # xe đang băng qua giao lộ: [{node,p0,p1,p2,t,dur}]
 var _release_timer: float = 0.0  # đồng hồ nhịp thả xe (đồng bộ mọi hướng xanh)
 
+# --- Môi trường: ngày/đêm + thời tiết ---
+var _sun: DirectionalLight3D          # đèn mặt trời (đổi độ sáng theo giờ)
+var _dt_env: Environment              # ambient + màu nền bầu trời
+var _rain: CPUParticles3D             # hạt mưa (bật/tắt)
+var _weather: String = "clear"        # "clear" | "rain"
+var _btn_weather: Button              # nút bật/tắt mưa
+var _btn_apply: Button                # nút ÁP DỤNG AI
+var _btn_toggle: Button               # nút AUTO
+var _speed_buttons: Dictionary = {}   # {speed:int -> Button}
+var _hour_buttons: Dictionary = {}    # {hour:int -> Button}
+var _active_speed: int = 1            # speed đang chọn (để tô sáng)
+var _active_hour: int = -1            # giờ vừa nhảy tới (để tô sáng)
+
 func _ready():
 	_init_traffic_data()
 	_build_lighting()
+	_build_rain()
 	_build_ground()
 	_build_roads()
 	_build_intersection()
@@ -95,14 +109,15 @@ func _process(delta: float):
 # ╚══════════════════════════════════════════════════════════════╝
 
 func _build_lighting():
-	# Đèn mặt trời (định hướng) — chiếu sáng toàn cảnh
+	# Đèn mặt trời (định hướng) — độ sáng/màu đổi theo giờ mô phỏng
 	var sun := DirectionalLight3D.new()
 	sun.name = "Sun"
 	sun.rotation_degrees = Vector3(-55, -40, 0)
 	sun.light_energy = 1.3
 	add_child(sun)
+	_sun = sun
 
-	# Ánh sáng môi trường (ambient) — tránh model tối/đen
+	# Ánh sáng môi trường (ambient) + màu nền bầu trời
 	var we := WorldEnvironment.new()
 	we.name = "WorldEnv"
 	var env := Environment.new()
@@ -113,6 +128,78 @@ func _build_lighting():
 	env.ambient_light_energy = 1.0
 	we.environment = env
 	add_child(we)
+	_dt_env = env
+
+# ── Mưa: hạt rơi từ trên xuống, phủ khu ngã tư (mặc định TẮT) ──
+func _build_rain():
+	var rain := CPUParticles3D.new()
+	rain.name = "Rain"
+	rain.position = Vector3(0, 45, 0)         # nguồn phát cao phía trên
+	rain.amount = 900
+	rain.lifetime = 1.4
+	rain.emitting = false                      # bật khi trời mưa
+	rain.local_coords = false
+	# Phát trong 1 hộp rộng phủ toàn ngã tư
+	rain.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	rain.emission_box_extents = Vector3(120, 1, 120)
+	# Rơi thẳng xuống, nhanh
+	rain.direction = Vector3(0, -1, 0)
+	rain.spread = 2.0
+	rain.gravity = Vector3(0, -35, 0)
+	rain.initial_velocity_min = 45.0
+	rain.initial_velocity_max = 60.0
+	# Hạt mưa = vệt nhỏ dài, hơi xanh trong
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.06, 0.9, 0.06)
+	rain.mesh = mesh
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.6, 0.72, 0.9, 0.55)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	rain.material_override = mat
+	add_child(rain)
+	_rain = rain
+
+# ── Áp ánh sáng theo giờ (0–24) + thời tiết ──
+func _apply_environment(hour_f: float, weather: String):
+	# Hệ số ban ngày: 0 = đêm tối, 1 = trưa sáng. Chuyển mượt quanh bình minh/hoàng hôn.
+	# Sáng dần 5→8h, tối dần 17→20h.
+	var day := clampf((hour_f - 5.0) / 3.0, 0.0, 1.0) * clampf((20.0 - hour_f) / 3.0, 0.0, 1.0)
+	day = clampf(day, 0.0, 1.0)
+
+	var is_rain := weather == "rain"
+	# Mưa → tối hơn (u ám), giảm thêm độ sáng
+	var overcast := 0.55 if is_rain else 1.0
+
+	if _sun:
+		_sun.light_energy = lerpf(0.08, 1.35, day) * overcast
+		# Bình minh/hoàng hôn ngả vàng cam; trưa trắng; đêm xanh lạnh
+		var warm := Color(1.0, 0.72, 0.45)   # cam lúc chạng vạng
+		var noon := Color(1.0, 0.98, 0.92)   # trắng ban ngày
+		var golden := clampf(1.0 - absf(day - 0.5) * 2.0, 0.0, 1.0)  # cao khi day~0.5
+		var sun_col := noon.lerp(warm, golden * 0.6)
+		if is_rain:
+			sun_col = sun_col.lerp(Color(0.7, 0.75, 0.82), 0.5)  # xám khi mưa
+		_sun.light_color = sun_col
+
+	if _dt_env:
+		# Ambient: ngày sáng xanh-trắng, đêm xanh đậm tối
+		var amb_day := Color(0.70, 0.75, 0.85)
+		var amb_night := Color(0.12, 0.15, 0.26)
+		if is_rain:
+			amb_day = Color(0.45, 0.50, 0.58)   # xám ẩm
+		_dt_env.ambient_light_color = amb_night.lerp(amb_day, day)
+		_dt_env.ambient_light_energy = lerpf(0.28, 1.0, day) * (0.8 if is_rain else 1.0)
+		# Màu nền bầu trời
+		var sky_day := Color(0.45, 0.62, 0.85)
+		var sky_night := Color(0.04, 0.05, 0.09)
+		if is_rain:
+			sky_day = Color(0.32, 0.36, 0.42)   # trời mưa xám
+		_dt_env.background_color = sky_night.lerp(sky_day, day)
+
+	# Bật/tắt hạt mưa
+	if _rain and _rain.emitting != is_rain:
+		_rain.emitting = is_rain
 
 func _build_ground():
 	var ground := CSGBox3D.new()
@@ -692,18 +779,19 @@ func _build_dashboard():
 	# ╔══════════════════════════════════════════════════════════════╗
 	# ║  TOP-LEFT: Clock + Fidelity + Phase                        ║
 	# ╚══════════════════════════════════════════════════════════════╝
-	var tl_panel: Panel = _make_panel.call(canvas, Vector2(10, 10), Vector2(340, 140))
+	var tl_panel: Panel = _make_panel.call(canvas, Vector2(10, 10), Vector2(340, 128))
 	var tl_vbox: VBoxContainer = _make_vbox.call(tl_panel, 10.0)
-	
+
 	_add_label(tl_vbox, "title", "🚦 DIGITAL TWIN L4 PRO", 14, Color(0.6, 0.8, 1.0))
 	_add_label(tl_vbox, "clock_time", "🕐 07:30:00 | Speed: 1.0x | Day 1", 12, Color.WHITE)
 	_add_label(tl_vbox, "fidelity", "🎯 Fidelity: -- %", 12, Color.WHITE)
 	_add_label(tl_vbox, "phase_info", "💡 Pha: -- | Còn: --s", 12, Color(0.8, 0.9, 1.0))
+	_add_label(tl_vbox, "weather_info", "☀️ Tạnh | 🌤️ Ngày", 12, Color(0.75, 0.85, 1.0))
 	
 	# ╔══════════════════════════════════════════════════════════════╗
 	# ║  TOP-RIGHT: Density 8 directions                           ║
 	# ╚══════════════════════════════════════════════════════════════╝
-	var tr_panel: Panel = _make_panel.call(canvas, Vector2(1920 - 380 - 10, 10), Vector2(380, 280))
+	var tr_panel: Panel = _make_panel.call(canvas, Vector2(1920 - 380 - 10, 10), Vector2(380, 205))
 	# Anchor top-right
 	tr_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	tr_panel.set_anchor(SIDE_LEFT, 1.0)
@@ -711,7 +799,7 @@ func _build_dashboard():
 	tr_panel.offset_left = -390
 	tr_panel.offset_right = -10
 	tr_panel.offset_top = 10
-	tr_panel.offset_bottom = 290
+	tr_panel.offset_bottom = 215
 	var tr_vbox: VBoxContainer = _make_vbox.call(tr_panel, 10.0)
 	
 	_add_label(tr_vbox, "sec_density", "🚗 MẬT ĐỘ XE (8 hướng)", 13, Color(0.8, 0.85, 1.0))
@@ -722,14 +810,14 @@ func _build_dashboard():
 	# ╔══════════════════════════════════════════════════════════════╗
 	# ║  BOTTOM-LEFT: KPIs + PCE                                   ║
 	# ╚══════════════════════════════════════════════════════════════╝
-	var bl_panel: Panel = _make_panel.call(canvas, Vector2(10, 1080 - 170 - 10), Vector2(320, 170))
+	var bl_panel: Panel = _make_panel.call(canvas, Vector2(10, 1080 - 128 - 10), Vector2(320, 128))
 	# Anchor bottom-left
 	bl_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	bl_panel.set_anchor(SIDE_TOP, 1.0)
 	bl_panel.set_anchor(SIDE_BOTTOM, 1.0)
 	bl_panel.offset_left = 10
 	bl_panel.offset_right = 330
-	bl_panel.offset_top = -180
+	bl_panel.offset_top = -138
 	bl_panel.offset_bottom = -10
 	var bl_vbox: VBoxContainer = _make_vbox.call(bl_panel, 10.0)
 	
@@ -743,7 +831,7 @@ func _build_dashboard():
 	# ╔══════════════════════════════════════════════════════════════╗
 	# ║  BOTTOM-RIGHT: AI Optimizer + Controls                     ║
 	# ╚══════════════════════════════════════════════════════════════╝
-	var br_panel: Panel = _make_panel.call(canvas, Vector2(1920 - 380 - 10, 1080 - 310 - 10), Vector2(380, 310))
+	var br_panel: Panel = _make_panel.call(canvas, Vector2(1920 - 380 - 10, 1080 - 280 - 10), Vector2(380, 280))
 	# Anchor bottom-right
 	br_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
 	br_panel.set_anchor(SIDE_LEFT, 1.0)
@@ -752,7 +840,7 @@ func _build_dashboard():
 	br_panel.set_anchor(SIDE_BOTTOM, 1.0)
 	br_panel.offset_left = -390
 	br_panel.offset_right = -10
-	br_panel.offset_top = -320
+	br_panel.offset_top = -290
 	br_panel.offset_bottom = -10
 	var br_vbox: VBoxContainer = _make_vbox.call(br_panel, 10.0)
 	
@@ -767,42 +855,96 @@ func _build_dashboard():
 	var speed_hbox := HBoxContainer.new()
 	speed_hbox.add_theme_constant_override("separation", 5)
 	br_vbox.add_child(speed_hbox)
-		
+
 	for spd in [1, 5, 10, 30, 60]:
-		var btn := Button.new()
-		btn.text = str(spd) + "x"
-		btn.custom_minimum_size = Vector2(55, 32)
+		var btn := _make_ctrl_button(str(spd) + "x", Vector2(55, 32))
 		btn.pressed.connect(_on_speed_button.bind(spd))
 		speed_hbox.add_child(btn)
+		_speed_buttons[spd] = btn
 
 	# Jump buttons
 	var jump_hbox := HBoxContainer.new()
 	jump_hbox.add_theme_constant_override("separation", 5)
 	br_vbox.add_child(jump_hbox)
-	
+
 	for hr in [7, 8, 12, 17, 22]:
-		var btn := Button.new()
-		btn.text = str(hr) + ":00"
-		btn.custom_minimum_size = Vector2(55, 32)
+		var btn := _make_ctrl_button(str(hr) + ":00", Vector2(55, 32))
 		btn.pressed.connect(_on_jump_button.bind(hr))
 		jump_hbox.add_child(btn)
+		_hour_buttons[hr] = btn
 
 	# Apply AI + Toggle Auto
 	var ctrl_hbox := HBoxContainer.new()
 	ctrl_hbox.add_theme_constant_override("separation", 5)
 	br_vbox.add_child(ctrl_hbox)
-	
-	var btn_apply := Button.new()
-	btn_apply.text = "ÁP DỤNG AI"
-	btn_apply.custom_minimum_size = Vector2(120, 36)
-	btn_apply.pressed.connect(_on_apply_pressed)
-	ctrl_hbox.add_child(btn_apply)
 
-	var btn_toggle := Button.new()
-	btn_toggle.text = "TOGGLE AUTO"
-	btn_toggle.custom_minimum_size = Vector2(120, 36)
-	btn_toggle.pressed.connect(_on_toggle_auto_pressed)
-	ctrl_hbox.add_child(btn_toggle)
+	_btn_apply = _make_ctrl_button("ÁP DỤNG AI", Vector2(112, 36))
+	_btn_apply.pressed.connect(_on_apply_pressed)
+	ctrl_hbox.add_child(_btn_apply)
+
+	_btn_toggle = _make_ctrl_button("AUTO", Vector2(90, 36))
+	_btn_toggle.pressed.connect(_on_toggle_auto_pressed)
+	ctrl_hbox.add_child(_btn_toggle)
+
+	_btn_weather = _make_ctrl_button("MƯA", Vector2(90, 36))
+	_btn_weather.pressed.connect(_on_weather_pressed)
+	ctrl_hbox.add_child(_btn_weather)
+
+	# Tô sáng speed mặc định (1x)
+	_set_active_speed(1)
+
+# ── Tạo nút có style rõ (normal / hover / pressed / focus) ──
+func _make_ctrl_button(text: String, size: Vector2) -> Button:
+	var btn := Button.new()
+	btn.text = text
+	btn.custom_minimum_size = size
+	btn.add_theme_stylebox_override("normal", _btn_sbox(Color(0.12, 0.15, 0.22), Color(0.30, 0.38, 0.55)))
+	btn.add_theme_stylebox_override("hover", _btn_sbox(Color(0.20, 0.26, 0.38), Color(0.45, 0.55, 0.75)))
+	btn.add_theme_stylebox_override("pressed", _btn_sbox(Color(0.16, 0.42, 0.26), Color(0.30, 0.85, 0.45)))
+	btn.add_theme_stylebox_override("focus", _btn_sbox(Color(0, 0, 0, 0), Color(0.35, 0.75, 1.0)))
+	return btn
+
+func _btn_sbox(bg: Color, border: Color) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = bg
+	s.border_color = border
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(6)
+	s.content_margin_left = 4
+	s.content_margin_right = 4
+	return s
+
+# Đổi style "normal" của nút giữa thường / đang-chọn (xanh nổi bật)
+func _set_button_active(btn: Button, active: bool) -> void:
+	if not btn:
+		return
+	if active:
+		btn.add_theme_stylebox_override("normal", _btn_sbox(Color(0.14, 0.45, 0.28), Color(0.35, 0.95, 0.5)))
+		btn.add_theme_color_override("font_color", Color(0.75, 1.0, 0.8))
+	else:
+		btn.add_theme_stylebox_override("normal", _btn_sbox(Color(0.12, 0.15, 0.22), Color(0.30, 0.38, 0.55)))
+		btn.remove_theme_color_override("font_color")
+
+func _set_active_speed(spd: int) -> void:
+	_active_speed = spd
+	for k in _speed_buttons:
+		_set_button_active(_speed_buttons[k], k == spd)
+
+func _set_active_hour(hr: int) -> void:
+	_active_hour = hr
+	for k in _hour_buttons:
+		_set_button_active(_hour_buttons[k], k == hr)
+
+# Nhấp nháy phản hồi khi bấm nút (xác nhận đã gửi lệnh)
+func _flash_button(btn: Button, txt: String) -> void:
+	if not btn:
+		return
+	var old := btn.text
+	btn.text = txt
+	btn.modulate = Color(0.5, 1.0, 0.6)
+	await get_tree().create_timer(1.0).timeout
+	btn.text = old
+	btn.modulate = Color.WHITE
 
 func _make_dash_panel(canvas: CanvasLayer, node_name: String, anchor_right: bool) -> VBoxContainer:
 	"""Tạo 1 panel neo trái hoặc phải, tự bám mép khi resize. Trả VBox chứa nội dung."""
@@ -884,14 +1026,20 @@ func update_twin_state(data: Dictionary):
 		_labels["avgWait"].text = "• Chờ TB: " + str(snapped(k.get("avgWait", 0), 0.1)) + " s"
 		_labels["efficiency"].text = "• Hiệu suất: " + str(snapped(k.get("efficiency", 0), 0.1)) + " %"
 	
-	# AI Decision
+	# AI Decision — hiện giây ĐANG CHẠY + (AI đề xuất)
 	if data.has("ai_decision"):
 		var ai: Dictionary = data["ai_decision"]
 		traffic_data["ai_decision"] = ai
-		var gt: Dictionary = ai.get("green_times", {})
+		var gt: Dictionary = ai.get("green_times", {})          # AI đề xuất
+		var cur: Dictionary = data.get("current_green_times", gt)  # đang chạy thật
 		for p in ["PH1", "PH2", "PH3", "PH4"]:
 			if gt.has(p) and _labels.has("ai_" + p):
-				_labels["ai_" + p].text = "  " + PHASE_NAMES[p] + ": " + str(gt[p]) + "s"
+				var running: int = int(cur.get(p, gt[p]))
+				var suggest: int = int(gt[p])
+				var lbl: Label = _labels["ai_" + p]
+				lbl.text = "  " + PHASE_NAMES[p] + ": " + str(running) + "s  (AI " + str(suggest) + "s)"
+				# Khác nhau → tô vàng (AI muốn đổi mà chưa áp); giống → xám bình thường
+				lbl.add_theme_color_override("font_color", Color(1.0, 0.8, 0.2) if running != suggest else Color(0.7, 0.7, 0.7))
 		if _labels.has("improvement"):
 			_labels["improvement"].text = "📈 Cải thiện: " + str(snapped(ai.get("improvement", 0), 0.1)) + " %"
 	
@@ -918,6 +1066,10 @@ func update_twin_state(data: Dictionary):
 		var sc: Dictionary = data["sim_clock"]
 		if _labels.has("clock_time"):
 			_labels["clock_time"].text = "🕐 " + str(sc.get("time_str", "??")) + " | Speed: " + str(sc.get("speed", 1)) + "x | Day " + str(sc.get("day", 1))
+		# Đồng bộ tô sáng nút speed theo backend
+		var spd_i := int(round(float(sc.get("speed", 1))))
+		if spd_i != _active_speed and _speed_buttons.has(spd_i):
+			_set_active_speed(spd_i)
 	
 	# Phase info
 	if data.has("phase") and _labels.has("phase_info"):
@@ -937,6 +1089,24 @@ func update_twin_state(data: Dictionary):
 			var on: bool = data["auto_apply"]
 			_labels["auto_apply_status"].text = "🤖 Auto-Apply: " + ("ON" if on else "OFF")
 			_labels["auto_apply_status"].add_theme_color_override("font_color", Color(0.3, 0.9, 0.4) if on else Color(0.8, 0.3, 0.3))
+		_set_button_active(_btn_toggle, bool(data["auto_apply"]))
+
+	# Thời tiết
+	if data.has("weather"):
+		_weather = str(data["weather"])
+		if _btn_weather:
+			_btn_weather.text = "TẠNH" if _weather == "rain" else "MƯA"
+		_set_button_active(_btn_weather, _weather == "rain")
+
+	# Ngày/đêm + thời tiết → cập nhật ánh sáng, hạt mưa
+	var sc2: Dictionary = traffic_data.get("sim_clock", {})
+	var hour_f: float = float(sc2.get("hour", 12)) + float(sc2.get("minute", 0)) / 60.0
+	_apply_environment(hour_f, _weather)
+	if _labels.has("weather_info"):
+		var is_night := hour_f < 6.0 or hour_f >= 18.0
+		var wx := "🌧️ Mưa" if _weather == "rain" else "☀️ Tạnh"
+		var dn := "🌙 Đêm" if is_night else "🌤️ Ngày"
+		_labels["weather_info"].text = wx + " | " + dn
 
 func _density_color(d: float) -> Color:
 	if d <= 0.15: return Color(0.2, 0.9, 0.4)
@@ -951,10 +1121,12 @@ func _density_color(d: float) -> Color:
 # ╚══════════════════════════════════════════════════════════════╝
 
 func _on_speed_button(speed: int):
+	_set_active_speed(speed)
 	var net := get_node_or_null("Network")
 	if net: net.send_speed_command(float(speed))
 
 func _on_jump_button(hour: int):
+	_set_active_hour(hour)
 	var net := get_node_or_null("Network")
 	if net: net.send_jump_command(hour)
 
@@ -964,7 +1136,12 @@ func _on_apply_pressed():
 	if net and ai:
 		var gt: Dictionary = ai.get("green_times", {})
 		net.send_control_action(gt)
+		_flash_button(_btn_apply, "✓ ĐÃ ÁP DỤNG")
 
 func _on_toggle_auto_pressed():
 	var net := get_node_or_null("Network")
 	if net: net.send_toggle_auto()
+
+func _on_weather_pressed():
+	var net := get_node_or_null("Network")
+	if net: net.send_toggle_weather()

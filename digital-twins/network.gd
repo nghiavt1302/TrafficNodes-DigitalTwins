@@ -91,6 +91,11 @@ func send_toggle_auto():
 	_send({"action": "TOGGLE_AUTO_APPLY"})
 	print("[NETWORK] 🤖 TOGGLE_AUTO_APPLY")
 
+func send_toggle_weather():
+	"""Toggle thời tiết (tạnh ↔ mưa)."""
+	_send({"action": "TOGGLE_WEATHER"})
+	print("[NETWORK] 🌦️ TOGGLE_WEATHER")
+
 func send_pause():
 	_send({"action": "PAUSE"})
 

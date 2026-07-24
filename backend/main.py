@@ -27,6 +27,7 @@ Nâng cấp v5.0:
 Chạy server:
     python main.py
 """
+from __future__ import annotations
 
 from __future__ import annotations
 
@@ -74,6 +75,9 @@ from config import (
     SIM_SPEED_MULTIPLIER,
     SIM_START_HOUR,
     SIM_START_MINUTE,
+    WEATHER_CLEAR,
+    WEATHER_RAIN,
+    RAIN_SATURATION_FACTOR,
 )
 from core.physical_twin import create_physical_twin
 from core.generator import TrafficGenerator
@@ -150,6 +154,9 @@ class IntersectionState:
         self.last_ai_result: dict[str, int] = dict(DEFAULT_GREEN_TIMES)
         self.last_ai_improvement: float = 0.0
         self.auto_apply_enabled: bool = AUTO_APPLY_ENABLED
+
+        # ── Thời tiết ── ("clear" | "rain")
+        self.weather: str = WEATHER_CLEAR
 
         # ── Starvation tracking ──
         self.starvation_counter: dict[str, int] = {p: 0 for p in PHASE_IDS}
@@ -334,6 +341,9 @@ class IntersectionState:
         self.sim_clock.tick()
         current_hour = self.sim_clock.hour
 
+        # Hệ số dòng bão hòa theo thời tiết (mưa → giảm năng lực giải tỏa)
+        sat_factor = RAIN_SATURATION_FACTOR if self.weather == WEATHER_RAIN else 1.0
+
         # ── 1. Pha đèn & Actuated Green Cutoff ──
         min_green = self._get_min_green_for_current_phase()
 
@@ -365,6 +375,7 @@ class IntersectionState:
             green_directions=green_dirs,
             phase_id=self.current_phase_id,
             sub_phase=self.sub_phase,
+            sat_factor=sat_factor,
         )
 
         # ── 3. Sensor reading ──
@@ -389,6 +400,7 @@ class IntersectionState:
                 forecast_values=forecast,
                 current_green_times=self.green_times,
                 hour=current_hour,
+                sat_factor=sat_factor,
             )
             self.last_ai_result = result.green_times
             self.last_ai_improvement = result.improvement
@@ -404,7 +416,7 @@ class IntersectionState:
                 )
 
         # ── 7. KPI (HCM 2010 — fixed) ──
-        kpis = self._compute_kpis(state_estimate, current_hour)
+        kpis = self._compute_kpis(state_estimate, current_hour, sat_factor)
 
         # ── 8. Fidelity Score ──
         fidelity = self._compute_fidelity(dt_densities)
@@ -429,6 +441,9 @@ class IntersectionState:
             "improvement": self.last_ai_improvement,
         }
 
+        # Giây đèn ĐANG CHẠY thực tế (khác với AI đề xuất khi AUTO tắt)
+        payload["current_green_times"] = dict(self.green_times)
+
         payload["ground_truth"] = {
             d: round(v, 4) for d, v in physical_densities.items()
         }
@@ -442,21 +457,25 @@ class IntersectionState:
         # Auto-apply status
         payload["auto_apply"] = self.auto_apply_enabled
 
+        # Thời tiết (frontend dùng cho hiệu ứng mưa + độ sáng)
+        payload["weather"] = self.weather
+
         # Vehicle mix & PCE
         payload["vehicle_mix"] = VEHICLE_MIX
         payload["weighted_pce"] = round(WEIGHTED_PCE, 4)
 
         return payload
 
-    def _compute_kpis(self, densities: dict[str, float], hour: int) -> dict[str, Any]:
+    def _compute_kpis(self, densities: dict[str, float], hour: int, sat_factor: float = 1.0) -> dict[str, Any]:
         """
         KPI theo HCM 2010 Delay Model — FIXED (no heuristic).
 
         d = d1 (uniform) + d2 (incremental)
         throughput = min(demand, capacity) — đúng HCM
+        sat_factor: hệ số dòng bão hòa theo thời tiết (mưa < 1.0).
         """
         C = sum(self.green_times[p] for p in PHASE_IDS) + len(PHASE_IDS) * (YELLOW_DURATION + ALL_RED_DURATION)
-        s_per_hour = SATURATION_FLOW_RATE
+        s_per_hour = SATURATION_FLOW_RATE * sat_factor
         m_h = get_hour_multiplier(hour)
 
         total_throughput = 0.0
@@ -706,6 +725,28 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     await websocket.send_text(ack)
 
+                elif action == "TOGGLE_WEATHER":
+                    async with state.lock:
+                        state.weather = (
+                            WEATHER_RAIN if state.weather == WEATHER_CLEAR else WEATHER_CLEAR
+                        )
+                    logger.info(f"🌦️ WEATHER → {state.weather.upper()}")
+                    ack = json.dumps({
+                        "ack": True, "action": "TOGGLE_WEATHER",
+                        "weather": state.weather,
+                    })
+                    await websocket.send_text(ack)
+
+                elif action == "SET_WEATHER":
+                    w = str(message.get("weather", WEATHER_CLEAR))
+                    async with state.lock:
+                        state.weather = WEATHER_RAIN if w == WEATHER_RAIN else WEATHER_CLEAR
+                    ack = json.dumps({
+                        "ack": True, "action": "SET_WEATHER",
+                        "weather": state.weather,
+                    })
+                    await websocket.send_text(ack)
+
                 elif action == "PAUSE":
                     state.sim_clock.pause()
                 elif action == "RESUME":
@@ -766,6 +807,7 @@ async def get_status():
             "improvement": state.last_ai_improvement,
         },
         "auto_apply": state.auto_apply_enabled,
+        "weather": state.weather,
         "fidelity": round(state._compute_fidelity(dt_densities) * 100, 1),
         "connected_clients": len(manager.active_connections),
     }

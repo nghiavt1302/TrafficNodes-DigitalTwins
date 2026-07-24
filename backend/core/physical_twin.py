@@ -75,8 +75,12 @@ class PhysicalTwinBase(ABC):
         green_directions: list[str] | None = None,
         phase_id: str | None = None,
         sub_phase: str | None = None,
+        sat_factor: float = 1.0,
     ) -> dict[str, float]:
-        """Chạy 1 bước mô phỏng, trả về ground truth densities."""
+        """Chạy 1 bước mô phỏng, trả về ground truth densities.
+
+        sat_factor: hệ số nhân dòng bão hòa (mưa < 1.0 → xe qua chậm hơn).
+        """
         ...
 
     def read_sensors(self) -> dict[str, float | None]:
@@ -194,8 +198,12 @@ class SumoPhysicalTwin(PhysicalTwinBase):
         green_directions: list[str] | None = None,
         phase_id: str | None = None,
         sub_phase: str | None = None,
+        sat_factor: float = 1.0,
     ) -> dict[str, float]:
-        """Chạy 1 bước SUMO simulation và thu thập density."""
+        """Chạy 1 bước SUMO simulation và thu thập density.
+
+        (SUMO tự mô hình hóa hành vi xe; sat_factor được bỏ qua ở backend này.)
+        """
         if not self._connected or self._traci is None:
             return dict(self.densities)
 
@@ -346,7 +354,7 @@ class SimulatedPhysicalTwin(PhysicalTwinBase):
                 break
         return k - 1
 
-    def _saturation_departures(self, direction: str) -> int:
+    def _saturation_departures(self, direction: str, sat_factor: float = 1.0) -> int:
         """Tính số xe rời hàng chờ theo HCM Saturation Flow."""
         q = self.queue[direction]
         if q <= 0:
@@ -358,6 +366,9 @@ class SimulatedPhysicalTwin(PhysicalTwinBase):
         # Rẽ trái chậm hơn (HCM factor 0.85)
         if direction in LEFT_TURN_DIRECTIONS:
             s_per_sec *= LEFT_TURN_SATURATION_FACTOR
+
+        # Thời tiết (mưa → đường trơn, giải tỏa chậm hơn)
+        s_per_sec *= sat_factor
 
         # Utilization factor
         utilization = min(1.0, q / (capacity * 0.3))
@@ -383,6 +394,7 @@ class SimulatedPhysicalTwin(PhysicalTwinBase):
         green_directions: list[str] | None = None,
         phase_id: str | None = None,
         sub_phase: str | None = None,
+        sat_factor: float = 1.0,
     ) -> dict[str, float]:
         """Chạy 1 bước mô phỏng vật lý (1 giây)."""
         greens = set(green_directions or [])
@@ -396,9 +408,9 @@ class SimulatedPhysicalTwin(PhysicalTwinBase):
             self.total_arrivals[direction] += arrivals
 
             if direction in greens:
-                # Đèn XANH → Giải tỏa
+                # Đèn XANH → Giải tỏa (mưa làm chậm qua sat_factor)
                 self._green_elapsed[direction] += 1.0
-                departures = self._saturation_departures(direction)
+                departures = self._saturation_departures(direction, sat_factor)
                 self.queue[direction] = max(0, self.queue[direction] - departures)
                 self.total_departures[direction] += departures
             else:

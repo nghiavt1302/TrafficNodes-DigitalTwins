@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Digital Twin Ngã Tư Thông Minh — Bản thuyết trình</title>
+<meta name="description" content="Slide giải thích dự án Digital Twin điều khiển đèn giao thông bằng AI — cho cả team, dễ hiểu, có ví dụ.">
+
+<style>
+  :root{
+    --asphalt:#0f1218;      /* nền nhựa đường */
+    --asphalt-2:#161b25;    /* panel */
+    --asphalt-3:#1e2532;    /* card */
+    --line:#2b3444;         /* viền */
+    --ink:#eef1f7;          /* chữ chính = vạch sơn trắng */
+    --muted:#8b95a9;        /* chữ phụ */
+    --go:#33d47f;           /* đèn xanh = trạng thái tối ưu / accent */
+    --wait:#f5b13d;         /* đèn vàng */
+    --stop:#ff5a5f;         /* đèn đỏ */
+    --sky:#5ea9ff;          /* xanh dữ liệu */
+    --maxw:1080px;
+    --mono:ui-monospace,"Cascadia Code","SF Mono",Consolas,monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+
+  body{
+    margin:0;background:var(--asphalt);color:var(--ink);
+    font-family:var(--sans);line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ── deck: mỗi slide = 1 màn hình, cuộn dọc snap ── */
+  .deck{scroll-snap-type:y mandatory;height:100vh;overflow-y:scroll;scroll-behavior:smooth}
+  .slide{
+    scroll-snap-align:start;min-height:100vh;
+    display:flex;flex-direction:column;justify-content:center;
+    padding:clamp(28px,6vw,90px) clamp(20px,7vw,110px);
+    position:relative;border-bottom:1px solid var(--line);
+  }
+  .inner{width:100%;max-width:var(--maxw);margin:0 auto}
+
+  /* ── eyebrow / nhãn slide ── */
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:10px;
+    font-family:var(--mono);font-size:13px;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--go);margin-bottom:22px;
+  }
+  .eyebrow .num{
+    color:var(--asphalt);background:var(--go);font-weight:700;
+    padding:2px 9px;border-radius:5px;letter-spacing:.05em;
+  }
+
+  h1{
+    font-size:clamp(38px,7vw,84px);line-height:1.02;margin:0 0 20px;
+    font-weight:800;letter-spacing:-.02em;text-wrap:balance;
+  }
+  h2{
+    font-size:clamp(28px,4.6vw,52px);line-height:1.08;margin:0 0 26px;
+    font-weight:800;letter-spacing:-.015em;text-wrap:balance;
+  }
+  h3{font-size:clamp(18px,2vw,22px);margin:0 0 8px;font-weight:700}
+  p{font-size:clamp(16px,1.8vw,20px);color:#cfd6e4;max-width:64ch;margin:0 0 16px}
+  .lead{font-size:clamp(19px,2.3vw,26px);color:#dbe1ec}
+  strong{color:var(--ink)}
+  .go{color:var(--go)}.wait{color:var(--wait)}.stop{color:var(--stop)}.sky{color:var(--sky)}
+
+  /* ── các khối ── */
+  .grid{display:grid;gap:18px}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:760px){.g2,.g3,.g4{grid-template-columns:1fr}}
+
+  .card{
+    background:var(--asphalt-3);border:1px solid var(--line);border-radius:14px;
+    padding:22px 24px;
+  }
+  .card h3{color:var(--ink)}
+  .card p{font-size:16px;margin:0;color:var(--muted)}
+
+  .example{
+    border-left:4px solid var(--go);background:rgba(51,212,127,.07);
+    border-radius:0 12px 12px 0;padding:18px 24px;margin-top:26px;
+  }
+  .example .tag{
+    font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--go);display:block;margin-bottom:8px;font-weight:700;
+  }
+  .example p{margin:0;color:#dbe1ec;font-size:clamp(16px,1.9vw,20px)}
+
+  .callout{
+    border-left:4px solid var(--wait);background:rgba(245,177,61,.08);
+    border-radius:0 12px 12px 0;padding:16px 22px;margin-top:20px;
+  }
+  .callout p{margin:0;font-size:16px;color:#ecd9b6}
+
+  code,.mono{font-family:var(--mono)}
+  .fx{
+    font-family:var(--mono);background:var(--asphalt-2);border:1px solid var(--line);
+    border-radius:10px;padding:16px 20px;font-size:clamp(14px,1.7vw,18px);
+    color:var(--sky);overflow-x:auto;margin:20px 0;
+  }
+  .fx .c{color:var(--muted)}
+
+  /* ── bảng ── */
+  .tablewrap{overflow-x:auto;margin-top:8px}
+  table{border-collapse:collapse;width:100%;font-size:clamp(14px,1.6vw,17px)}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line)}
+  th{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  td .mono{color:var(--go)}
+  tbody tr:hover{background:rgba(255,255,255,.02)}
+
+  /* ── 2 thế giới ── */
+  .worlds{display:grid;grid-template-columns:1fr auto 1fr;gap:0;align-items:stretch;margin-top:14px}
+  @media(max-width:760px){.worlds{grid-template-columns:1fr;gap:16px}}
+  .world{background:var(--asphalt-3);border:1px solid var(--line);border-radius:14px;padding:24px}
+  .world.phys{border-color:rgba(255,90,95,.4)}
+  .world.dig{border-color:rgba(51,212,127,.45)}
+  .world h3{font-size:20px}
+  .world ul{margin:10px 0 0;padding-left:18px;color:var(--muted);font-size:15px}
+  .world li{margin:5px 0}
+  .bridge{display:flex;flex-direction:column;justify-content:center;gap:14px;padding:0 22px;color:var(--muted);font-family:var(--mono);font-size:13px;text-align:center}
+  @media(max-width:760px){.bridge{flex-direction:row;padding:0}}
+  .arrow{font-size:22px;color:var(--go)}
+
+  /* ── đèn 4 pha ── */
+  .phases{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:14px}
+  @media(max-width:760px){.phases{grid-template-columns:repeat(2,1fr)}}
+  .phase{background:var(--asphalt-3);border:1px solid var(--line);border-radius:14px;padding:18px;text-align:center}
+  .phase .pid{font-family:var(--mono);font-weight:700;color:var(--go);letter-spacing:.1em}
+  .phase .dur{font-size:34px;font-weight:800;margin:6px 0 2px;font-variant-numeric:tabular-nums}
+  .phase .nm{font-size:14px;color:var(--muted)}
+  .phase .type{display:inline-block;margin-top:10px;font-family:var(--mono);font-size:11px;letter-spacing:.1em;padding:3px 8px;border-radius:20px;text-transform:uppercase}
+  .type.left{background:rgba(94,169,255,.15);color:var(--sky)}
+  .type.thru{background:rgba(51,212,127,.15);color:var(--go)}
+
+  /* dãy đèn tín hiệu mini */
+  .lights{display:inline-flex;gap:6px;vertical-align:middle;margin-left:4px}
+  .lights i{width:13px;height:13px;border-radius:50%;display:inline-block;opacity:.25}
+  .lights i.r{background:var(--stop)}.lights i.y{background:var(--wait)}.lights i.g{background:var(--go)}
+  .lights i.on{opacity:1;box-shadow:0 0 10px currentColor}
+
+  /* ── các bước tick ── */
+  ol.steps{counter-reset:s;list-style:none;padding:0;margin:14px 0 0;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:760px){ol.steps{grid-template-columns:1fr}}
+  ol.steps li{counter-increment:s;background:var(--asphalt-3);border:1px solid var(--line);border-radius:11px;padding:14px 16px 14px 52px;position:relative;font-size:15px;color:#cfd6e4}
+  ol.steps li::before{content:counter(s);position:absolute;left:14px;top:13px;width:26px;height:26px;border-radius:7px;background:var(--go);color:var(--asphalt);font-family:var(--mono);font-weight:700;display:grid;place-items:center;font-size:14px}
+  ol.steps li b{color:var(--ink)}
+
+  /* KPI cards */
+  .kpi .card{text-align:left}
+  .kpi .val{font-family:var(--mono);font-size:30px;font-weight:800;color:var(--go);margin:4px 0}
+
+  /* ── thanh tiến trình + điều hướng ── */
+  .rail{position:fixed;right:26px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:12px;z-index:50}
+  @media(max-width:760px){.rail{right:12px}}
+  .rail button{width:11px;height:11px;border-radius:50%;border:1.5px solid var(--muted);background:transparent;padding:0;cursor:pointer;transition:all .2s}
+  .rail button.active{background:var(--go);border-color:var(--go);transform:scale(1.35)}
+  .rail button:focus-visible{outline:2px solid var(--go);outline-offset:3px}
+
+  .counter{position:fixed;left:26px;bottom:22px;font-family:var(--mono);font-size:13px;color:var(--muted);z-index:50;letter-spacing:.08em}
+  .counter b{color:var(--go)}
+  .hint{position:fixed;right:26px;bottom:22px;font-family:var(--mono);font-size:12px;color:var(--muted);z-index:50;letter-spacing:.05em}
+  @media(max-width:760px){.hint{display:none}}
+
+  .topline{position:fixed;top:0;left:0;height:3px;background:var(--go);z-index:60;transition:width .2s ease;box-shadow:0 0 12px var(--go)}
+
+  .tagrow{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
+  .pill{font-family:var(--mono);font-size:13px;padding:6px 13px;border-radius:20px;border:1px solid var(--line);color:var(--muted)}
+  .pill b{color:var(--ink)}
+
+  .foot{margin-top:30px;font-family:var(--mono);font-size:13px;color:var(--muted);letter-spacing:.05em}
+</style>
+
+<div class="topline" id="topline"></div>
+<nav class="rail" id="rail" aria-label="Điều hướng slide"></nav>
+<div class="counter" id="counter"></div>
+<div class="hint">↑ ↓ &nbsp;/&nbsp; cuộn để chuyển slide</div>
+
+<div class="deck" id="deck">
+
+  <!-- 1. TITLE -->
+  <section class="slide" id="s1">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">01</span> Digital Twin · ISO 23247 · Level 4</div>
+      <h1>Ngã tư biết tự <span class="go">nghĩ</span>.</h1>
+      <p class="lead">Một bản sao số của ngã tư thật, nơi <strong>AI tự tính lại thời gian đèn xanh</strong> mỗi vài giây để bớt kẹt xe — và tự áp dụng luôn, không cần người bấm nút.</p>
+      <div class="tagrow">
+        <span class="pill"><b>Backend</b> · Python / FastAPI</span>
+        <span class="pill"><b>Frontend</b> · Godot 3D</span>
+        <span class="pill"><b>AI</b> · Tối ưu + Kalman dự báo</span>
+        <span class="pill"><b>Bối cảnh</b> · Giao thông Việt Nam</span>
+      </div>
+      <div class="lights" aria-hidden="true" style="margin-top:34px;transform:scale(1.4);transform-origin:left">
+        <i class="r on"></i><i class="y"></i><i class="g"></i>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. VẤN ĐỀ -->
+  <section class="slide" id="s2">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">02</span> Vấn đề</div>
+      <h2>Đèn giao thông thường quá <span class="stop">"ngốc"</span>.</h2>
+      <p>Hầu hết đèn ở ngã tư chạy theo <strong>lịch cố định</strong>: xanh 30 giây, đỏ 30 giây… bất kể đường bên nào đang đông hay vắng.</p>
+      <div class="grid g2">
+        <div class="card">
+          <h3 class="stop">Hậu quả</h3>
+          <p>Một bên xếp hàng dài chờ đèn xanh, trong khi bên kia đèn xanh mà… chẳng có xe nào chạy. Lãng phí và kẹt xe.</p>
+        </div>
+        <div class="card">
+          <h3 class="go">Mong muốn</h3>
+          <p>Đèn "nhìn" được lượng xe từng hướng, rồi <strong>chia thời gian xanh cho công bằng và hiệu quả</strong> theo thực tế mỗi lúc.</p>
+        </div>
+      </div>
+      <div class="example">
+        <span class="tag">Ví dụ đời thường</span>
+        <p>7h sáng hướng vào trung tâm đông nghẹt, hướng ra ngoại thành vắng tanh. Đèn cố định vẫn chia đều 50–50. Đèn thông minh sẽ cho hướng đông nhiều xanh hơn.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Ý TƯỞNG: DIGITAL TWIN -->
+  <section class="slide" id="s3">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">03</span> Ý tưởng cốt lõi</div>
+      <h2>Digital Twin = <span class="go">bản sao số</span> chạy song song đời thật.</h2>
+      <p>Chúng ta cho <strong>hai thế giới chạy cùng lúc</strong>. Thế giới thật gửi dữ liệu cảm biến sang bản sao số; bản sao số suy nghĩ rồi gửi lệnh điều khiển ngược lại.</p>
+      <div class="worlds">
+        <div class="world phys">
+          <h3 class="stop">🚗 Thế giới thật</h3>
+          <p style="color:var(--muted);font-size:15px;margin:6px 0 0">Physical Twin</p>
+          <ul>
+            <li>Xe đến, xếp hàng, qua đèn</li>
+            <li>Đèn đỏ / vàng / xanh</li>
+            <li>Cảm biến có <em>nhiễu</em> và đôi khi <em>mất tín hiệu</em></li>
+          </ul>
+        </div>
+        <div class="bridge">
+          <div><div class="arrow">→</div>dữ liệu cảm biến</div>
+          <div><div class="arrow">←</div>lệnh điều khiển đèn</div>
+        </div>
+        <div class="world dig">
+          <h3 class="go">🧠 Bản sao số</h3>
+          <p style="color:var(--muted);font-size:15px;margin:6px 0 0">Digital Twin</p>
+          <ul>
+            <li>Đoán trạng thái thật từ cảm biến</li>
+            <li>Dự báo 10 giây tới (Kalman)</li>
+            <li>AI tính đèn tối ưu → tự áp dụng</li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout">
+        <p><strong>Level 4 "Prescriptive":</strong> AI không chỉ <em>báo cáo</em> nên làm gì — nó <strong>tự động làm luôn</strong> (bật <span class="mono">AUTO_APPLY</span>). Đây là mức cao nhất, ngoài mô tả và dự đoán.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. KIẾN TRÚC -->
+  <section class="slide" id="s4">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">04</span> Kiến trúc — 2 phần</div>
+      <h2>Một <span class="sky">bộ não</span>, một <span class="go">màn hình</span>.</h2>
+      <div class="grid g2">
+        <div class="card">
+          <h3 class="sky">Backend — "bộ não"</h3>
+          <p style="color:#cfd6e4;font-size:16px">Python / FastAPI. Chạy mô phỏng, tính toán AI, tính KPI. Phát dữ liệu ra ngoài qua <b>WebSocket cổng 8000</b>.</p>
+        </div>
+        <div class="card">
+          <h3 class="go">Frontend — "màn hình"</h3>
+          <p style="color:#cfd6e4;font-size:16px">Godot 4.7 (3D). Vẽ ngã tư, xe, đèn, bảng số liệu. Có nút bấm điều khiển gửi ngược xuống bộ não.</p>
+        </div>
+      </div>
+      <div class="fx" style="margin-top:26px">
+Backend (Python, :8000)  <span class="c">──WebSocket──▶</span>  Godot 3D
+                         <span class="c">◀── lệnh điều khiển ──</span>
+      </div>
+      <div class="example">
+        <span class="tag">Ví dụ luồng dữ liệu</span>
+        <p>Bộ não đóng gói trạng thái ngã tư thành <span class="mono">JSON</span> mỗi giây → gửi qua WebSocket → Godot nhận và cập nhật xe, đèn, số liệu ngay lập tức trên màn hình 3D.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. 8 HƯỚNG + 4 PHA -->
+  <section class="slide" id="s5">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">05</span> Khái niệm dễ nhầm · 1</div>
+      <h2>8 hướng đi, gom thành <span class="go">4 pha đèn</span>.</h2>
+      <p>Không phải 4 hướng mà là <strong>8</strong>: mỗi trục có "đi thẳng" và "rẽ trái riêng". Đèn xoay vòng qua 4 pha theo chuẩn <strong>NEMA — rẽ trái đi trước</strong> để không xe nào cắt mặt nhau.</p>
+      <div class="phases">
+        <div class="phase"><div class="pid">PH1</div><div class="dur wait">15s</div><div class="nm">Bắc–Nam rẽ trái</div><span class="type left">Left</span></div>
+        <div class="phase"><div class="pid">PH2</div><div class="dur go">35s</div><div class="nm">Bắc–Nam thẳng</div><span class="type thru">Through</span></div>
+        <div class="phase"><div class="pid">PH3</div><div class="dur wait">12s</div><div class="nm">Đông–Tây rẽ trái</div><span class="type left">Left</span></div>
+        <div class="phase"><div class="pid">PH4</div><div class="dur go">30s</div><div class="nm">Đông–Tây thẳng</div><span class="type thru">Through</span></div>
+      </div>
+      <div class="callout">
+        <p>Mỗi pha đi qua 3 nhịp: <span class="go">XANH</span> → <span class="wait">VÀNG (3s)</span> → <span class="stop">ĐỎ HẾT (2s)</span> → sang pha kế tiếp. Trục chính (Bắc–Nam) được ưu tiên nhiều thời gian hơn.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. PCE -->
+  <section class="slide" id="s6">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">06</span> Khái niệm dễ nhầm · 2</div>
+      <h2>Đếm xe kiểu Việt Nam: <span class="go">quy đổi xe máy</span>.</h2>
+      <p>Đường Việt Nam <strong>65% là xe máy</strong>. Một xe máy chiếm chỗ ít hơn ô tô nhiều, nên nếu đếm "1 xe = 1 xe" thì sai bét. Ta quy đổi tất cả về đơn vị chuẩn <strong>PCU</strong> (Passenger Car Unit).</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Loại xe</th><th>Quy đổi (PCU)</th><th>Tỷ lệ đường VN</th></tr></thead>
+          <tbody>
+            <tr><td>Ô tô con</td><td class="mono">1.00</td><td>25%</td></tr>
+            <tr><td>Xe máy</td><td class="mono">0.25</td><td>65%</td></tr>
+            <tr><td>Xe buýt</td><td class="mono">2.00</td><td>5%</td></tr>
+            <tr><td>Xe tải</td><td class="mono">2.50</td><td>5%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="example">
+        <span class="tag">Ví dụ tính</span>
+        <p>4 xe máy = <span class="mono">4 × 0.25 = 1.0 PCU</span> — tức chỉ bằng <strong>1 ô tô</strong>. Nhờ vậy lưu lượng phản ánh đúng thực tế đông xe máy của ta.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7. TICK -->
+  <section class="slide" id="s7">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">07</span> Vòng đời</div>
+      <h2>Mỗi giây mô phỏng làm gì? <span class="go">9 bước.</span></h2>
+      <p>Đây là "một tick" — trái tim của bộ não, lặp lại liên tục:</p>
+      <ol class="steps">
+        <li><b>Đồng hồ +1 giây</b> (giờ mô phỏng, tách khỏi giờ thật)</li>
+        <li><b>Cập nhật pha đèn</b> — cắt sớm nếu đường trống</li>
+        <li><b>Thế giới thật chạy</b> → mật độ xe thật</li>
+        <li><b>Đọc cảm biến</b> — thêm nhiễu, đôi khi mất tín hiệu</li>
+        <li><b>Bản sao số đoán lại</b> mật độ từ cảm biến</li>
+        <li><b>Kalman lọc nhiễu + dự báo</b> 10 giây tới</li>
+        <li><b>Mỗi 5 tick: AI tối ưu</b> → cải thiện &gt;1% thì tự áp dụng</li>
+        <li><b>Tính KPI</b> (theo mô hình delay HCM 2010)</li>
+        <li><b>Đóng gói JSON → gửi Godot</b> để vẽ</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- 8. AI OPTIMIZER -->
+  <section class="slide" id="s8">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">08</span> Bộ não AI · Tối ưu</div>
+      <h2>AI hỏi: chia xanh sao cho <span class="go">ít xe kẹt nhất</span>?</h2>
+      <p>Optimizer thử rất nhiều cách chia thời gian xanh cho 4 pha, chấm điểm mỗi cách bằng "hàm mục tiêu", rồi chọn cách <strong>điểm thấp nhất</strong> (ít xe kẹt còn lại nhất).</p>
+      <div class="fx">
+J(u) = Σ (xe kẹt còn lại)²  +  λ · (mức thay đổi đèn)²
+       <span class="c">└ muốn nhỏ nhất ┘      └ phạt đổi quá gắt ┘</span>
+      </div>
+      <p style="font-size:16px;color:var(--muted)">Giải bằng <span class="mono">scipy</span> Nelder-Mead, thử <strong>3 điểm xuất phát</strong> để không kẹt ở đáp án tồi. Có phạt để đèn không nhảy giật cục gây khó chịu.</p>
+      <div class="example">
+        <span class="tag">Ví dụ thật (từ log chạy)</span>
+        <p>AI đề xuất <span class="mono">PH1=8s · PH2=29s · PH3=8s · PH4=24s</span> → giảm <strong class="go">+20.4%</strong> lượng xe kẹt so với lịch cũ → tự động áp dụng ngay.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9. KALMAN -->
+  <section class="slide" id="s9">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">09</span> Bộ não AI · Dự báo</div>
+      <h2>Kalman Filter: <span class="sky">nhìn trước</span> 10 giây.</h2>
+      <p>Cảm biến luôn có nhiễu (sai số, camera che khuất). Kalman Filter vừa <strong>lọc sạch nhiễu</strong>, vừa <strong>dự báo</strong> mật độ sắp tới — theo dõi cả lượng xe (density) lẫn tốc độ thay đổi (velocity).</p>
+      <div class="grid g2">
+        <div class="card"><h3 class="sky">Vì sao cần dự báo?</h3><p style="color:#cfd6e4;font-size:16px">Đèn đặt bây giờ ảnh hưởng đến vài giây tới. Biết trước xe sắp dồn về đâu → chia xanh khôn hơn.</p></div>
+        <div class="card"><h3 class="go">Kết hợp thế nào?</h3><p style="color:#cfd6e4;font-size:16px"><span class="mono">85%</span> tin vào hiện tại + <span class="mono">15%</span> tin vào dự báo → ra "mật độ hiệu dụng" để AI tối ưu.</p></div>
+      </div>
+      <div class="example">
+        <span class="tag">Ví dụ dễ hình dung</span>
+        <p>Giống lái xe nhìn xa phía trước thay vì chỉ nhìn mũi xe: thấy xe phía trước phanh → mình giảm ga sớm, mượt hơn nhiều so với phản ứng lúc sát đuôi.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10. KPI -->
+  <section class="slide" id="s10">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">10</span> Đo lường</div>
+      <h2>4 con số nói lên <span class="go">tốt hay chưa</span>.</h2>
+      <div class="grid g4 kpi">
+        <div class="card"><h3>Thông lượng</h3><div class="val">28.6</div><p>xe qua/phút (quy đổi PCU) — càng cao càng tốt</p></div>
+        <div class="card"><h3>Chờ TB</h3><div class="val wait">76s</div><p>thời gian chờ trung bình (HCM 2010) — càng thấp càng tốt</p></div>
+        <div class="card"><h3>Hiệu suất</h3><div class="val">4.8%</div><p>chờ càng ít → hiệu suất càng cao</p></div>
+        <div class="card"><h3>Fidelity</h3><div class="val sky">96.8%</div><p>bản sao số khớp đời thật bao nhiêu %</p></div>
+      </div>
+      <div class="callout">
+        <p><strong>Fidelity</strong> là chỉ số "sức khỏe" của Digital Twin: nếu bản sao lệch xa thực tế thì mọi quyết định của AI đều đáng ngờ. Cao = tin được.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 11. THỜI TIẾT -->
+  <section class="slide" id="s11">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">11</span> Môi trường · Thời tiết</div>
+      <h2>Trời <span class="stop">mưa</span> → đường trơn → xe qua chậm.</h2>
+      <p>Bấm nút <strong>MƯA</strong> để bật/tắt. Mưa làm <strong>năng lực giải tỏa giảm 25%</strong> (đường trơn, xe dè chừng) — ảnh hưởng thật lên số liệu, không chỉ đổi hình.</p>
+      <div class="grid g2">
+        <div class="card"><h3 class="sky">Đổi hình ảnh</h3><p style="font-size:16px;color:#cfd6e4">Cảnh xám u ám, hạt mưa rơi, trời tối hơn.</p></div>
+        <div class="card"><h3 class="wait">Đổi số liệu</h3><p style="font-size:16px;color:#cfd6e4">Chờ TB tăng, thông lượng giảm. AI phải nới xanh để bù.</p></div>
+      </div>
+      <div class="example">
+        <span class="tag">Ví dụ đo thật</span>
+        <p>Cùng lượng xe, bật mưa: <strong>Chờ TB 88s → 101s</strong>. AI nhận biết đang mưa và tự chia lại đèn cho phù hợp điều kiện xấu.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12. NGÀY / ĐÊM -->
+  <section class="slide" id="s12">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">12</span> Môi trường · Ngày &amp; Đêm</div>
+      <h2>Nhịp đèn đổi theo <span class="go">giờ trong ngày</span>.</h2>
+      <p>Ánh sáng chuyển tự động theo đồng hồ mô phỏng (đêm tối xanh, trưa trắng sáng, chạng vạng ngả cam). Quan trọng hơn: <strong>chu kỳ đèn co giãn theo lưu lượng từng giờ</strong> — đêm vắng chu kỳ ngắn, cao điểm chu kỳ dài.</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Giờ</th><th>Bối cảnh</th><th>Chu kỳ</th><th>Đèn đỏ (1 hướng)</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">3h</td><td>Khuya vắng</td><td class="mono">~99s</td><td><span class="go">~85s</span></td></tr>
+            <tr><td class="mono">12h</td><td>Trưa</td><td class="mono">~166s</td><td>~149s</td></tr>
+            <tr><td class="mono">17h</td><td>Cao điểm chiều</td><td class="mono">~178s</td><td><span class="stop">~159s</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <p>Đèn đỏ khuya <strong>85s</strong> vs cao điểm <strong>159s</strong> — chênh gần <strong>2×</strong>. Ít xe thì không bắt chờ lâu vô ích; đông xe thì cho chu kỳ dài để xả.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 13. ĐIỀU KHIỂN -->
+  <section class="slide" id="s13">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">13</span> Tương tác · Các nút</div>
+      <h2>Mỗi nút đổi gì, <span class="go">nhìn đâu</span> để thấy?</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Nút</th><th>Đổi cái gì</th><th>Nhìn ở đâu</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">1x–60x</td><td>Tốc độ tua (không đổi đèn)</td><td>Đồng hồ, xe chạy nhanh/chậm</td></tr>
+            <tr><td class="mono">7:00–22:00</td><td>Khung giờ → lượng xe + ánh sáng</td><td>% mật độ, sáng/tối</td></tr>
+            <tr><td class="mono">AUTO</td><td>Bật/tắt AI tự điều khiển</td><td>KPI "Chờ TB", % mật độ</td></tr>
+            <tr><td class="mono">ÁP DỤNG AI</td><td>Đẩy 1 lần đèn AI xuống thực tế</td><td>Số "đang chạy" ở panel AI</td></tr>
+            <tr><td class="mono">MƯA</td><td>Đường trơn</td><td>Cảnh xám + Chờ TB tăng</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <p>Panel AI hiện <strong>giây đang chạy (AI đề xuất)</strong>. Khác nhau → <span class="wait">vàng</span> (AI muốn đổi mà chưa áp); giống → xám. Nút đang chọn được <span class="go">tô sáng xanh</span>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 14. KỊCH BẢN DEMO -->
+  <section class="slide" id="s14">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">14</span> Kịch bản trình diễn</div>
+      <h2>Trình tự vàng để <span class="go">thấy rõ kết quả</span>.</h2>
+      <p>Nhìn <strong>KPI "Chờ TB"</strong> (góc trái dưới) xuyên suốt — đó là con số nói lên giá trị AI:</p>
+      <ol class="steps">
+        <li><b>Bấm 17:00</b> → cao điểm, xe đông, Chờ TB cao</li>
+        <li><b>Bấm AUTO (tắt)</b> → đèn đứng yên → Chờ TB <span class="stop">leo lên</span>, panel AI chuyển vàng</li>
+        <li><b>Bấm ÁP DỤNG AI</b> → đèn nhảy sang cấu hình AI → panel về xám</li>
+        <li><b>Bấm AUTO (bật lại)</b> → Chờ TB <span class="go">tụt xuống</span></li>
+        <li><b>Bấm MƯA</b> → Chờ TB tăng, cảnh xám → tắt lại</li>
+        <li><b>Bấm 22:00</b> → cảnh tối, chu kỳ ngắn lại</li>
+        <li><b>Bấm 60x</b> → xem cả ngày trong 1 phút → chốt Fidelity 97%</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- 15. CÁCH CHẠY -->
+  <section class="slide" id="s15">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">15</span> Chạy thử</div>
+      <h2>Một file. <span class="go">Double-click là chạy.</span></h2>
+      <p>Cả team chỉ cần chạy <strong>run.bat</strong> ở thư mục gốc — nó tự lo mọi thứ:</p>
+      <ol class="steps" style="grid-template-columns:1fr">
+        <li><b>Kiểm tra</b> Python và Godot đã cài chưa</li>
+        <li><b>Cài thư viện</b> backend (pip install)</li>
+        <li><b>Bật backend</b> ở cửa sổ riêng + chờ cổng 8000 sẵn sàng</li>
+        <li><b>Import assets</b> + mở frontend Godot 3D</li>
+      </ol>
+      <div class="callout">
+        <p><strong>Cần sẵn trên máy:</strong> Python 3.9+ và Godot 4.x (đổi tên exe thành <span class="mono">godot.exe</span>), cả hai nằm trong PATH. Chưa cài SUMO cũng chạy được — tự dùng bản mô phỏng nội bộ.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 16. KẾT -->
+  <section class="slide" id="s16">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">16</span> Tóm lại · Vì sao</div>
+      <h2>Vì sao dự án làm như vậy?</h2>
+      <div class="grid g2">
+        <div class="card"><h3 class="go">2 thế giới song song</h3><p style="font-size:16px">Để AI học và quyết định trên bản sao — an toàn, không rủi ro ngoài đời thật.</p></div>
+        <div class="card"><h3 class="go">Cảm biến có nhiễu</h3><p style="font-size:16px">Mô phỏng đúng thực tế: đời thật không bao giờ có dữ liệu sạch 100%.</p></div>
+        <div class="card"><h3 class="go">PCE xe máy 0.25</h3><p style="font-size:16px">Để con số đúng với giao thông Việt Nam, không bê nguyên mô hình nước ngoài.</p></div>
+        <div class="card"><h3 class="go">Tự động áp dụng</h3><p style="font-size:16px">Prescriptive Level 4 — mục tiêu cuối là hệ thống tự vận hành, không cần người trực.</p></div>
+      </div>
+      <div class="foot">TrafficNodes · Digital Twin L4 Pro v5.0 · ISO 23247 · HCM 2010 · NEMA · Kalman 2D</div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  const deck = document.getElementById('deck');
+  const slides = [...deck.querySelectorAll('.slide')];
+  const rail = document.getElementById('rail');
+  const counter = document.getElementById('counter');
+  const topline = document.getElementById('topline');
+  let current = 0;
+
+  // build dot nav
+  slides.forEach((s,i)=>{
+    const b = document.createElement('button');
+    b.setAttribute('aria-label','Tới slide '+(i+1));
+    b.addEventListener('click',()=>slides[i].scrollIntoView());
+    rail.appendChild(b);
+  });
+  const dots = [...rail.children];
+
+  function setActive(i){
+    current = i;
+    dots.forEach((d,j)=>d.classList.toggle('active',j===i));
+    counter.innerHTML = '<b>'+String(i+1).padStart(2,'0')+'</b> / '+String(slides.length).padStart(2,'0');
+    topline.style.width = ((i+1)/slides.length*100)+'%';
+  }
+
+  const io = new IntersectionObserver((entries)=>{
+    entries.forEach(e=>{
+      if(e.isIntersecting) setActive(slides.indexOf(e.target));
+    });
+  },{root:deck,threshold:0.55});
+  slides.forEach(s=>io.observe(s));
+
+  // keyboard nav
+  document.addEventListener('keydown',(e)=>{
+    if(e.key==='ArrowDown'||e.key==='PageDown'||e.key===' '){
+      e.preventDefault(); if(current<slides.length-1) slides[current+1].scrollIntoView();
+    } else if(e.key==='ArrowUp'||e.key==='PageUp'){
+      e.preventDefault(); if(current>0) slides[current-1].scrollIntoView();
+    } else if(e.key==='Home'){ slides[0].scrollIntoView(); }
+    else if(e.key==='End'){ slides[slides.length-1].scrollIntoView(); }
+  });
+
+  setActive(0);
+</script>
+
+</head>
+<body>
+</body>
+</html>
