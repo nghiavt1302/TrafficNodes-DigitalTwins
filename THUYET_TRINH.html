@@ -498,10 +498,70 @@ J(u) = Σ (xe kẹt còn lại)²  +  λ · (mức thay đổi đèn)²
     </div>
   </section>
 
-  <!-- 16. KẾT -->
+  <!-- 16. BẰNG CHỨNG -->
   <section class="slide" id="s16">
     <div class="inner">
-      <div class="eyebrow"><span class="num">16</span> Tóm lại · Vì sao</div>
+      <div class="eyebrow"><span class="num">16</span> Bằng chứng · So sánh</div>
+      <h2>AI tốt hơn <span class="go">bao nhiêu</span>? So 3 chế độ.</h2>
+      <p>3 ngã tư ảo chạy <strong>song song, cùng lưu lượng</strong>, khác cách điều khiển. Đo hàng chờ thực tế (không phải công thức) — hiển thị bảng so sánh realtime ngay trên màn.</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Chế độ</th><th>Cách hoạt động</th><th>Xe chờ (giờ cao điểm)</th></tr></thead>
+          <tbody>
+            <tr><td><span class="stop">Đèn cố định</span></td><td>Lịch cứng, không đổi (chuẩn VN hiện nay)</td><td class="mono">cao nhất</td></tr>
+            <tr><td><span class="wait">Actuated</span></td><td>Chia xanh theo demand + cắt sớm khi trống</td><td class="mono">trung bình</td></tr>
+            <tr><td><span class="go">AI (của mình)</span></td><td>Tối ưu + dự báo Kalman + tự áp dụng</td><td class="mono">thấp nhất</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="example">
+        <span class="tag">Kết quả đo thật</span>
+        <p>Giờ cao điểm (12h–17h): AI <strong>giảm ~12–20% xe chờ</strong> so với đèn cố định. Giờ vắng cả 3 tương đương (ít xe → điều khiển nào cũng thoáng). Có nút <span class="mono">/kpi_log.csv</span> xuất số liệu ra Excel.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 17. XE ƯU TIÊN -->
+  <section class="slide" id="s17">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">17</span> Tình huống · Xe ưu tiên</div>
+      <h2>Xe cấp cứu → <span class="go">làn sóng xanh</span> tức thì.</h2>
+      <p>Bấm nút <strong>🚑 XE CẤP CỨU</strong> → hệ thống <strong>ưu tiên tín hiệu (preemption)</strong>: lập tức mở xanh cho hướng xe cấp cứu và giữ, các hướng khác chờ. Sau khi xe qua → trả về điều khiển AI bình thường.</p>
+      <div class="grid g2">
+        <div class="card"><h3 class="stop">Đời thật</h3><p style="font-size:16px;color:#cfd6e4">Xe cấp cứu kẹt ở đèn đỏ → chậm cứu người. Vấn đề nhức nhối.</p></div>
+        <div class="card"><h3 class="go">Digital Twin</h3><p style="font-size:16px;color:#cfd6e4">Ép xanh dọc hướng ưu tiên → xe cấp cứu qua không dừng. Banner đỏ + đếm ngược hiển thị trên màn.</p></div>
+      </div>
+      <div class="callout">
+        <p>Đây là tính năng chuẩn của hệ thống đèn thông minh thế giới (Emergency Vehicle Preemption) — chứng minh Digital Twin mở rộng được cho tình huống đặc biệt.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 18. HẠN CHẾ + HƯỚNG PHÁT TRIỂN -->
+  <section class="slide" id="s18">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">18</span> Trung thực · Hạn chế &amp; Tương lai</div>
+      <h2>Điều chưa làm được &amp; <span class="go">hướng đi tiếp</span>.</h2>
+      <div class="grid g2">
+        <div class="card">
+          <h3 class="wait">Hạn chế hiện tại</h3>
+          <p style="font-size:15px;color:#cfd6e4">• Mới <strong>1 ngã tư đơn</strong>, chưa phối hợp nhiều nút<br>• Dữ liệu <strong>tổng hợp</strong> (Poisson), chưa phải camera/data thật<br>• Lợi thế AI rõ nhất lúc cao điểm; giờ vắng ≈ actuated<br>• Có tích hợp SUMO nhưng để fallback cho ổn định</p>
+        </div>
+        <div class="card">
+          <h3 class="go">Hướng phát triển</h3>
+          <p style="font-size:15px;color:#cfd6e4">• Mở rộng <strong>corridor</strong> nhiều nút liên hoàn<br>• <strong>Học tăng cường (RL)</strong> thay tối ưu tĩnh<br>• Nạp <strong>dữ liệu thật</strong> từ camera/cảm biến<br>• Deploy <strong>web/VPS</strong> để truy cập từ trình duyệt</p>
+        </div>
+      </div>
+      <div class="callout">
+        <p>Nêu hạn chế trước = chủ động, đáng tin. Mỗi hạn chế đều có hướng khắc phục rõ ràng — cho thấy đề tài còn dư địa phát triển.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 19. KẾT -->
+  <section class="slide" id="s19">
+    <div class="inner">
+      <div class="eyebrow"><span class="num">19</span> Tóm lại · Vì sao</div>
       <h2>Vì sao dự án làm như vậy?</h2>
       <div class="grid g2">
         <div class="card"><h3 class="go">2 thế giới song song</h3><p style="font-size:16px">Để AI học và quyết định trên bản sao — an toàn, không rủi ro ngoài đời thật.</p></div>

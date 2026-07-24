@@ -36,11 +36,15 @@ import json
 import logging
 import math
 import sys
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any
 
+import os
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, PlainTextResponse
 
 # ── Import các module nội bộ ──────────────────────────────────
 sys.path.insert(0, ".")
@@ -79,7 +83,7 @@ from config import (
     WEATHER_RAIN,
     RAIN_SATURATION_FACTOR,
 )
-from core.physical_twin import create_physical_twin
+from core.physical_twin import create_physical_twin, SimulatedPhysicalTwin
 from core.generator import TrafficGenerator
 from core.forecaster import KalmanForecaster, pretrain_forecaster
 from core.optimizer import optimize
@@ -93,6 +97,36 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("main")
+
+# ── Ghi log KPI ra CSV (báo cáo / vẽ Excel) ──
+_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kpi_log.csv")
+_CSV_HEADER = ("day,time,hour,weather,fixed_queue,fixed_thr,"
+               "actuated_queue,actuated_thr,ai_queue,ai_thr,ai_avgWait,fidelity\n")
+
+
+def init_kpi_csv() -> None:
+    """Tạo mới file CSV + ghi header (gọi lúc server khởi động)."""
+    try:
+        with open(_CSV_PATH, "w", encoding="utf-8", newline="") as f:
+            f.write(_CSV_HEADER)
+    except Exception as e:
+        logger.warning(f"⚠️ Không mở được CSV: {e}")
+
+
+def append_kpi_row(payload: dict) -> None:
+    """Ghi 1 dòng KPI (3 chế độ) vào CSV."""
+    try:
+        bl = payload["baselines"]
+        sc = payload["sim_clock"]
+        row = (f'{sc["day"]},{sc["time_str"]},{sc["hour"]},{payload.get("weather","clear")},'
+               f'{bl["fixed"]["avgQueue"]},{bl["fixed"]["throughput"]},'
+               f'{bl["actuated"]["avgQueue"]},{bl["actuated"]["throughput"]},'
+               f'{bl["ai"]["avgQueue"]},{bl["ai"]["throughput"]},'
+               f'{payload["kpis"]["avgWait"]},{payload.get("fidelity",0)}\n')
+        with open(_CSV_PATH, "a", encoding="utf-8", newline="") as f:
+            f.write(row)
+    except Exception as e:
+        logger.warning(f"⚠️ Lỗi ghi CSV: {e}")
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -111,6 +145,199 @@ def _get_phase_directions(phase_id: str) -> list[str]:
         if phase["id"] == phase_id:
             return phase["directions"]
     return []
+
+
+def _get_phase_type(phase_id: str) -> str:
+    for phase in PHASES:
+        if phase["id"] == phase_id:
+            return phase.get("type", "THROUGH")
+    return "THROUGH"
+
+
+def compute_kpis_hcm(green_times: dict[str, int], hour: int, sat_factor: float = 1.0) -> dict[str, Any]:
+    """
+    KPI theo HCM 2010 Delay Model — hàm thuần (module-level).
+
+    d = d1 (uniform) + d2 (incremental); throughput = min(demand, capacity).
+    Chỉ phụ thuộc phương án đèn (green_times) + giờ + thời tiết → dùng chung
+    cho cả AI lẫn các baseline (fixed / actuated) để SO SÁNH công bằng.
+    """
+    C = sum(green_times[p] for p in PHASE_IDS) + len(PHASE_IDS) * (YELLOW_DURATION + ALL_RED_DURATION)
+    s_per_hour = SATURATION_FLOW_RATE * sat_factor
+    m_h = get_hour_multiplier(hour)
+
+    total_throughput = 0.0
+    total_delay = 0.0
+
+    for direction in DIRECTIONS:
+        phase_id = _get_phase_for_direction(direction)
+        g_i = green_times[phase_id]
+        capacity_dir = get_queue_capacity(direction)
+
+        green_ratio = g_i / C if C > 0 else 0.5
+
+        effective_s = s_per_hour
+        if direction in LEFT_TURN_DIRECTIONS:
+            effective_s *= LEFT_TURN_SATURATION_FACTOR
+        capacity = effective_s * green_ratio
+
+        base = BASE_DENSITY.get(direction, 0.1)
+        q_per_sec = base * m_h * ARRIVAL_RATE_SCALE * WEIGHTED_PCE
+        q_per_hour = q_per_sec * 3600 * capacity_dir
+
+        x = min(0.98, q_per_hour / capacity) if capacity > 0 else 0.5
+
+        actual_throughput = min(q_per_hour, capacity)
+        total_throughput += actual_throughput
+
+        numerator1 = 0.5 * C * ((1 - green_ratio) ** 2)
+        denominator1 = max(0.05, 1.0 - min(1.0, x) * green_ratio)
+        d1 = numerator1 / denominator1
+
+        T = C / 3600.0
+        c_cap = max(1.0, capacity)
+        k = HCM_K_FACTOR
+        I = HCM_I_FACTOR
+
+        term_inside = (x - 1.0) ** 2 + (8.0 * k * I * x) / (c_cap * T) if T > 0 else 0
+        d2 = 900.0 * T * ((x - 1.0) + math.sqrt(max(0.0, term_inside)))
+        d2 = max(0.0, min(d2, 120.0))
+
+        total_delay += d1 + d2
+
+    avg_delay = total_delay / len(DIRECTIONS)
+    throughput_per_min = total_throughput / 60.0
+    efficiency = max(0.0, (1.0 - avg_delay / MAX_ACCEPTABLE_DELAY)) * 100.0
+
+    return {
+        "throughput": round(throughput_per_min, 1),
+        "avgWait": round(avg_delay, 1),
+        "efficiency": round(min(100.0, efficiency), 1),
+    }
+
+
+def actuated_green_times(hour: int) -> dict[str, int]:
+    """
+    Baseline 'Vehicle-Actuated': chia xanh TỈ LỆ nhu cầu mỗi pha theo giờ,
+    kẹp min/max — KHÔNG dự báo Kalman, KHÔNG phạt thay đổi (đơn giản hơn AI).
+    Đại diện đèn cảm biến truyền thống, nằm giữa 'fixed' và 'AI'.
+    """
+    m_h = get_hour_multiplier(hour)
+    demands: dict[str, float] = {}
+    for p in PHASE_IDS:
+        demands[p] = sum(BASE_DENSITY.get(d, 0.05) for d in _get_phase_directions(p)) * m_h
+    total = sum(demands.values()) or 1.0
+    budget = float(sum(DEFAULT_GREEN_TIMES.values()))
+
+    out: dict[str, int] = {}
+    for p in PHASE_IDS:
+        is_left = _get_phase_type(p) == "LEFT"
+        lo = MIN_GREEN_TIME if is_left else MIN_GREEN_TIME_THROUGH
+        hi = 30 if is_left else 90
+        g = demands[p] / total * budget
+        out[p] = int(round(max(lo, min(hi, g))))
+    return out
+
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  SHADOW WORLD — sim baseline chạy nền để SO SÁNH             ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+def _wait_from_window(win: deque) -> dict[str, float]:
+    """Từ cửa sổ (queue_sum, departures) → hàng chờ TB + thông lượng thực tế."""
+    if not win:
+        return {"avgQueue": 0.0, "throughput": 0.0}
+    q = sum(w[0] for w in win) / len(win)
+    deps = sum(w[1] for w in win)
+    mins = len(win) / 60.0
+    return {
+        "avgQueue": round(q, 1),
+        "throughput": round(deps / mins, 1) if mins > 0 else 0.0,
+    }
+
+
+class ShadowWorld:
+    """
+    Sim baseline chạy song song trên CÙNG mô hình cầu (Poisson + HCM saturation),
+    nhưng dùng chính sách điều khiển KHÁC để so sánh công bằng với AI:
+
+      - policy="fixed":    đèn cố định (DEFAULT_GREEN_TIMES), không đổi, không cắt sớm.
+      - policy="actuated": chia xanh theo demand giờ + cắt sớm khi trống (đèn cảm biến).
+      - policy="ai":       dùng phương án đèn của AI (bơm từ ngoài) + cắt sớm.
+
+    Cả 3 world dùng CÙNG mô hình SimulatedPhysicalTwin → so sánh công bằng, độc
+    lập với backend vật lý thật (SUMO hay fallback) đang chạy cho phần 3D.
+
+    Đo thực tế: hàng chờ TB (PCU) + thông lượng, trên cửa sổ trượt ~3 phút sim.
+    """
+
+    def __init__(self, policy: str) -> None:
+        self.policy = policy
+        self.green_times: dict[str, int] = dict(DEFAULT_GREEN_TIMES)
+        self._external_plan: dict[str, int] = dict(DEFAULT_GREEN_TIMES)  # cho policy="ai"
+        self.phase_index = 0
+        self.sub_phase = "GREEN"
+        self.phase_timer = 0.0
+        self.twin = SimulatedPhysicalTwin()
+        self._win: deque = deque(maxlen=180)
+        self._recalc()
+
+    def set_plan(self, plan: dict[str, int]) -> None:
+        """Bơm phương án đèn AI vào (dùng cho policy='ai')."""
+        self._external_plan = dict(plan)
+
+    @property
+    def current_phase_id(self) -> str:
+        return PHASE_IDS[self.phase_index]
+
+    def _dirs(self) -> list[str]:
+        return _get_phase_directions(self.current_phase_id)
+
+    def _min_green(self) -> int:
+        return MIN_GREEN_TIME if _get_phase_type(self.current_phase_id) == "LEFT" else MIN_GREEN_TIME_THROUGH
+
+    def _recalc(self) -> None:
+        if self.sub_phase == "GREEN":
+            self.phase_max = float(self.green_times[self.current_phase_id])
+        elif self.sub_phase == "YELLOW":
+            self.phase_max = float(YELLOW_DURATION)
+        else:
+            self.phase_max = float(ALL_RED_DURATION)
+
+    def _advance(self, hour: int) -> None:
+        if self.sub_phase == "GREEN":
+            self.sub_phase = "YELLOW"
+        elif self.sub_phase == "YELLOW":
+            self.sub_phase = "ALL_RED"
+        else:
+            self.phase_index = (self.phase_index + 1) % len(PHASE_IDS)
+            self.sub_phase = "GREEN"
+            if self.policy == "actuated":
+                self.green_times = actuated_green_times(hour)  # cập nhật phân bổ đầu pha
+            elif self.policy == "ai":
+                self.green_times = dict(self._external_plan)   # theo phương án AI
+        self.phase_timer = 0.0
+        self._recalc()
+
+    def tick(self, hour: int, sat_factor: float) -> None:
+        # Máy trạng thái đèn (actuated & ai: cắt sớm khi các hướng xanh đều trống)
+        if (self.policy in ("actuated", "ai") and self.sub_phase == "GREEN"
+                and self.phase_timer >= self._min_green()
+                and all(self.twin.densities.get(d, 0.0) < DENSITY_CUTOFF for d in self._dirs())):
+            self._advance(hour)
+        else:
+            self.phase_timer += 1.0
+            if self.phase_timer >= self.phase_max:
+                self._advance(hour)
+
+        greens = self._dirs() if self.sub_phase == "GREEN" else []
+        before = sum(self.twin.total_departures.values())
+        self.twin.tick(hour=hour, green_directions=greens, sat_factor=sat_factor)
+        deps = sum(self.twin.total_departures.values()) - before
+        self._win.append((sum(self.twin.queue.values()), deps))
+
+    def metrics(self) -> dict[str, float]:
+        return _wait_from_window(self._win)
 
 
 class IntersectionState:
@@ -146,6 +373,11 @@ class IntersectionState:
         # ── Physical Twin (SUMO hoặc Fallback) ──
         self.physical_twin = create_physical_twin(use_sumo=SUMO_ENABLED)
 
+        # ── Shadow worlds cho SO SÁNH baseline (chạy nền, cùng mô hình sim) ──
+        self.shadow_fixed = ShadowWorld("fixed")
+        self.shadow_actuated = ShadowWorld("actuated")
+        self.shadow_ai = ShadowWorld("ai")
+
         # ── Digital Twin modules ──
         self.generator = TrafficGenerator()
         self.forecaster = KalmanForecaster()
@@ -157,6 +389,9 @@ class IntersectionState:
 
         # ── Thời tiết ── ("clear" | "rain")
         self.weather: str = WEATHER_CLEAR
+
+        # ── Xe ưu tiên (cấp cứu) — tín hiệu ưu tiên / làn sóng xanh ──
+        self.emergency: dict[str, Any] = {"active": False, "direction": "", "ticks_left": 0, "kind": "ambulance"}
 
         # ── Starvation tracking ──
         self.starvation_counter: dict[str, int] = {p: 0 for p in PHASE_IDS}
@@ -344,28 +579,40 @@ class IntersectionState:
         # Hệ số dòng bão hòa theo thời tiết (mưa → giảm năng lực giải tỏa)
         sat_factor = RAIN_SATURATION_FACTOR if self.weather == WEATHER_RAIN else 1.0
 
-        # ── 1. Pha đèn & Actuated Green Cutoff ──
-        min_green = self._get_min_green_for_current_phase()
-
-        if self.sub_phase == "GREEN" and self.phase_timer >= min_green:
-            all_clear = all(
-                self.generator.densities.get(d, 0.0) < DENSITY_CUTOFF
-                for d in self.current_green_directions
-            )
-            if all_clear:
-                logger.info(
-                    f"✂️ ACTUATED CUTOFF: Pha {self.current_phase_id}, "
-                    f"cắt sớm sau {self.phase_timer:.0f}s"
+        # ── 1. Pha đèn ──
+        if self.emergency["active"]:
+            # 1a. ƯU TIÊN XE CẤP CỨU (preemption): ép GIỮ xanh cho pha của hướng ưu tiên.
+            target_phase = _get_phase_for_direction(self.emergency["direction"])
+            self.phase_index = PHASE_IDS.index(target_phase)
+            self.sub_phase = "GREEN"
+            self.phase_timer = 0.0
+            self._calc_phase_duration()
+            self.emergency["ticks_left"] -= 1
+            if self.emergency["ticks_left"] <= 0:
+                self.emergency["active"] = False
+                logger.info("🚑 Hết ưu tiên cấp cứu — trả về điều khiển bình thường")
+        else:
+            # 1b. Actuated Green Cutoff (bình thường)
+            min_green = self._get_min_green_for_current_phase()
+            if self.sub_phase == "GREEN" and self.phase_timer >= min_green:
+                all_clear = all(
+                    self.generator.densities.get(d, 0.0) < DENSITY_CUTOFF
+                    for d in self.current_green_directions
                 )
-                self._advance_phase()
+                if all_clear:
+                    logger.info(
+                        f"✂️ ACTUATED CUTOFF: Pha {self.current_phase_id}, "
+                        f"cắt sớm sau {self.phase_timer:.0f}s"
+                    )
+                    self._advance_phase()
+                else:
+                    self.phase_timer += 1.0
+                    if self.phase_timer >= self.phase_max:
+                        self._advance_phase()
             else:
                 self.phase_timer += 1.0
                 if self.phase_timer >= self.phase_max:
                     self._advance_phase()
-        else:
-            self.phase_timer += 1.0
-            if self.phase_timer >= self.phase_max:
-                self._advance_phase()
 
         green_dirs = self.get_green_directions()
 
@@ -377,6 +624,12 @@ class IntersectionState:
             sub_phase=self.sub_phase,
             sat_factor=sat_factor,
         )
+
+        # Shadow worlds (baseline) — cùng mô hình sim, khác cách điều khiển
+        self.shadow_ai.set_plan(self.green_times)  # thế giới AI dùng đèn AI hiện tại
+        self.shadow_fixed.tick(current_hour, sat_factor)
+        self.shadow_actuated.tick(current_hour, sat_factor)
+        self.shadow_ai.tick(current_hour, sat_factor)
 
         # ── 3. Sensor reading ──
         sensor_data = self.physical_twin.read_sensors()
@@ -418,6 +671,13 @@ class IntersectionState:
         # ── 7. KPI (HCM 2010 — fixed) ──
         kpis = self._compute_kpis(state_estimate, current_hour, sat_factor)
 
+        # ── 7b. So sánh baseline (ĐO THỰC TẾ từ sim): fixed / actuated / AI ──
+        baselines = {
+            "fixed": self.shadow_fixed.metrics(),
+            "actuated": self.shadow_actuated.metrics(),
+            "ai": self.shadow_ai.metrics(),
+        }
+
         # ── 8. Fidelity Score ──
         fidelity = self._compute_fidelity(dt_densities)
 
@@ -433,6 +693,7 @@ class IntersectionState:
 
         payload["phase"] = self.phase
         payload["kpis"] = kpis
+        payload["baselines"] = baselines
         payload["forecast"] = {d: round(v, 4) for d, v in forecast.items()}
         payload["velocity"] = {d: round(v, 6) for d, v in velocity_estimate.items()}
 
@@ -460,6 +721,14 @@ class IntersectionState:
         # Thời tiết (frontend dùng cho hiệu ứng mưa + độ sáng)
         payload["weather"] = self.weather
 
+        # Xe ưu tiên (cấp cứu)
+        payload["emergency"] = {
+            "active": self.emergency["active"],
+            "direction": self.emergency["direction"],
+            "seconds_left": max(0, int(self.emergency["ticks_left"])),
+            "kind": self.emergency.get("kind", "ambulance"),
+        }
+
         # Vehicle mix & PCE
         payload["vehicle_mix"] = VEHICLE_MIX
         payload["weighted_pce"] = round(WEIGHTED_PCE, 4)
@@ -467,72 +736,8 @@ class IntersectionState:
         return payload
 
     def _compute_kpis(self, densities: dict[str, float], hour: int, sat_factor: float = 1.0) -> dict[str, Any]:
-        """
-        KPI theo HCM 2010 Delay Model — FIXED (no heuristic).
-
-        d = d1 (uniform) + d2 (incremental)
-        throughput = min(demand, capacity) — đúng HCM
-        sat_factor: hệ số dòng bão hòa theo thời tiết (mưa < 1.0).
-        """
-        C = sum(self.green_times[p] for p in PHASE_IDS) + len(PHASE_IDS) * (YELLOW_DURATION + ALL_RED_DURATION)
-        s_per_hour = SATURATION_FLOW_RATE * sat_factor
-        m_h = get_hour_multiplier(hour)
-
-        total_throughput = 0.0
-        total_delay = 0.0
-
-        for direction in DIRECTIONS:
-            phase_id = _get_phase_for_direction(direction)
-            g_i = self.green_times[phase_id]
-            capacity_dir = get_queue_capacity(direction)
-
-            green_ratio = g_i / C if C > 0 else 0.5
-
-            # Capacity (PCU/h) — with left-turn factor
-            effective_s = s_per_hour
-            if direction in LEFT_TURN_DIRECTIONS:
-                effective_s *= LEFT_TURN_SATURATION_FACTOR
-            capacity = effective_s * green_ratio
-
-            # Arrival rate (PCU/h) — with PCE
-            base = BASE_DENSITY.get(direction, 0.1)
-            q_per_sec = base * m_h * ARRIVAL_RATE_SCALE * WEIGHTED_PCE
-            q_per_hour = q_per_sec * 3600 * capacity_dir
-
-            # Degree of saturation
-            x = min(0.98, q_per_hour / capacity) if capacity > 0 else 0.5
-
-            # Throughput = min(demand, capacity) — FIXED (no heuristic)
-            actual_throughput = min(q_per_hour, capacity)
-            total_throughput += actual_throughput
-
-            # HCM 2010 d1: Uniform Delay
-            numerator1 = 0.5 * C * ((1 - green_ratio) ** 2)
-            denominator1 = max(0.05, 1.0 - min(1.0, x) * green_ratio)
-            d1 = numerator1 / denominator1
-
-            # HCM 2010 d2: Incremental Delay
-            T = C / 3600.0
-            c_cap = max(1.0, capacity)
-            k = HCM_K_FACTOR
-            I = HCM_I_FACTOR
-
-            term_inside = (x - 1.0) ** 2 + (8.0 * k * I * x) / (c_cap * T) if T > 0 else 0
-            d2 = 900.0 * T * ((x - 1.0) + math.sqrt(max(0.0, term_inside)))
-            d2 = max(0.0, min(d2, 120.0))
-
-            delay_i = d1 + d2
-            total_delay += delay_i
-
-        avg_delay = total_delay / len(DIRECTIONS)
-        throughput_per_min = total_throughput / 60.0
-        efficiency = max(0.0, (1.0 - avg_delay / MAX_ACCEPTABLE_DELAY)) * 100.0
-
-        return {
-            "throughput": round(throughput_per_min, 1),
-            "avgWait":    round(avg_delay, 1),
-            "efficiency": round(min(100.0, efficiency), 1),
-        }
+        """KPI cho phương án đèn ĐANG CHẠY (self.green_times)."""
+        return compute_kpis_hcm(self.green_times, hour, sat_factor)
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -589,6 +794,10 @@ async def lifespan(app: FastAPI):
     pretrain_forecaster(state.forecaster)
     logger.info("✅ Kalman Filter 2D sẵn sàng!")
 
+    # Khởi tạo file log KPI
+    init_kpi_csv()
+    logger.info(f"📄 KPI log: {_CSV_PATH}")
+
     # Simulation loop
     simulation_task = asyncio.create_task(_simulation_loop())
     logger.info(f"🌐 WebSocket: ws://{HOST}:{PORT}/traffic-ws")
@@ -632,6 +841,10 @@ async def _simulation_loop() -> None:
         try:
             async with state.lock:
                 payload = state.tick()
+
+            # Ghi CSV mỗi 10 tick (báo cáo)
+            if state.tick_count % 10 == 0:
+                append_kpi_row(payload)
 
             if manager.active_connections:
                 message = json.dumps(payload, ensure_ascii=False)
@@ -747,6 +960,20 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     await websocket.send_text(ack)
 
+                elif action == "EMERGENCY":
+                    direction = str(message.get("direction", "NS"))
+                    if direction not in DIRECTIONS:
+                        direction = "NS"
+                    kind = str(message.get("kind", "ambulance"))
+                    secs = int(message.get("seconds", 5))
+                    async with state.lock:
+                        state.emergency = {"active": True, "direction": direction, "ticks_left": secs, "kind": kind}
+                    logger.info(f"🚨 ƯU TIÊN [{kind}]: hướng {direction} trong {secs}s")
+                    ack = json.dumps({
+                        "ack": True, "action": "EMERGENCY", "direction": direction, "kind": kind,
+                    })
+                    await websocket.send_text(ack)
+
                 elif action == "PAUSE":
                     state.sim_clock.pause()
                 elif action == "RESUME":
@@ -783,6 +1010,14 @@ async def root():
         "websocket": f"ws://{HOST}:{PORT}/traffic-ws",
         "tick_count": state.tick_count,
     }
+
+
+@app.get("/kpi_log.csv")
+async def download_kpi_csv():
+    """Tải file log KPI (so sánh 3 chế độ) — mở bằng Excel."""
+    if os.path.exists(_CSV_PATH):
+        return FileResponse(_CSV_PATH, media_type="text/csv", filename="kpi_log.csv")
+    return PlainTextResponse("Chưa có dữ liệu log.", status_code=404)
 
 
 @app.get("/status")

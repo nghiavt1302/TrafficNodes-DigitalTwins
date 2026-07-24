@@ -11,8 +11,8 @@ const ROAD_LENGTH := 120.0     # Chiều dài mỗi nhánh
 const LANE_WIDTH := 5.0        # Chiều rộng 1 làn
 const INTERSECTION_SIZE := 15.0
 const ROAD_Y := 0.05           # Cao hơn mặt đất 1 chút
-const EXIT_DIST := 40.0        # Xe chạy ra xa bao nhiêu trước khi biến mất
-const CROSS_DURATION := 1.5    # Giây để xe băng qua giao lộ
+const EXIT_DIST := 58.0        # Xe chạy ra xa (gần mép đường ±60) rồi mới ẩn
+const CROSS_DURATION := 2.8    # Giây để xe băng qua giao lộ + chạy ra xa
 const RELEASE_INTERVAL := 0.8  # Nhịp thả xe khi đèn xanh (mọi hướng xanh thả đồng thời)
 const VEH_Y := ROAD_Y + 0.06   # Độ cao đặt xe (đáy xe sát mặt đường)
 
@@ -64,13 +64,47 @@ var _weather: String = "clear"        # "clear" | "rain"
 var _btn_weather: Button              # nút bật/tắt mưa
 var _btn_apply: Button                # nút ÁP DỤNG AI
 var _btn_toggle: Button               # nút AUTO
+var _btn_emergency: Button            # nút xe cấp cứu
+var _btn_police: Button               # nút đoàn công an
+var _emergency_active: bool = false   # đang ưu tiên
+var _emergency_prev: bool = false     # trạng thái trước (bắt sườn lên)
+var _emergency_dir: String = "NS"     # hướng ưu tiên
+var _convoy_remaining: int = 0        # số xe còn phải sinh trong đợt
+var _convoy_kind: String = "ambulance"
+var _convoy_timer: float = 0.0        # nhịp sinh xe trong đoàn
+var _emergency_movers: Array = []     # xe ưu tiên đang chạy dọc làn (có né vật cản)
+const EMG_SPEED := 30.0               # tốc độ xe ưu tiên (đơn vị/giây)
+const EMG_START := 58.0               # điểm xuất phát (cuối làn)
+const EMG_END := -58.0                # điểm ra khỏi khung
+const EMG_DODGE := 3.5                # độ lệch trái của xe ưu tiên (trong lòng đường)
+const EMG_YIELD := 2.5                # độ dạt phải của xe thường nhường đường
+var _ambulance_lights: Array = []     # [{light, mesh}] để nhấp nháy
+var _blink_t: float = 0.0             # đồng hồ nhấp nháy
+# --- Còi hụ (tổng hợp real-time, không cần file audio) ---
+var _siren_player: AudioStreamPlayer
+var _siren_pb: AudioStreamGeneratorPlayback
+var _siren_phase: float = 0.0
+var _siren_t: float = 0.0
+var _siren_on: bool = false
+const SIREN_RATE := 22050.0
 var _speed_buttons: Dictionary = {}   # {speed:int -> Button}
 var _hour_buttons: Dictionary = {}    # {hour:int -> Button}
 var _active_speed: int = 1            # speed đang chọn (để tô sáng)
 var _active_hour: int = -1            # giờ vừa nhảy tới (để tô sáng)
 
+# --- So sánh baseline + biểu đồ 24h ---
+var _chart_lines: Dictionary = {}     # {"fixed"/"actuated"/"ai" -> Line2D}
+var _chart_data: Dictionary = {"fixed": {}, "actuated": {}, "ai": {}}  # series -> {hour:val}
+const CHART_MAXQ := 90.0              # trần trục Y (xe chờ)
+const CHART_X0 := 40.0
+const CHART_Y_TOP := 54.0
+const CHART_W := 410.0
+const CHART_H := 104.0
+const CMP_COLORS := {"fixed": Color(0.95, 0.35, 0.35), "actuated": Color(0.98, 0.72, 0.25), "ai": Color(0.35, 0.95, 0.55)}
+
 func _ready():
 	_init_traffic_data()
+	_build_siren()
 	_build_lighting()
 	_build_rain()
 	_build_ground()
@@ -103,6 +137,16 @@ func _process(delta: float):
 	_release_green_vehicles(delta)
 	_update_crossing(delta)
 	_update_traffic_light_colors()
+	# Sinh xe ưu tiên: cả đoàn (số hữu hạn), nối đuôi cách nhau
+	if _convoy_remaining > 0:
+		_convoy_timer += delta
+		if _convoy_timer >= 0.55:
+			_convoy_timer = 0.0
+			_spawn_emergency_vehicle(_emergency_dir, _convoy_kind)
+			_convoy_remaining -= 1
+	_update_emergency_movers(delta)
+	_update_beacons(delta)
+	_update_siren(delta)
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  XÂY DỰNG MÔI TRƯỜNG 3D                                    ║
@@ -513,8 +557,12 @@ func _update_vehicles():
 
 		# Xe rời hàng do nhịp thả (_release_green_vehicles), không xử lý ở đây.
 		# Trượt xe còn lại tiến lên vị trí mới (lerp mượt mà)
+		# Nếu có xe ưu tiên trên cùng trục → dạt sang phải nhường đường
+		var yv := Vector3.ZERO
+		if _emergency_active and _same_side(dir_key, _emergency_dir):
+			yv = _yield_vec(_emergency_dir)
 		for i in range(current.size()):
-			var new_pos := _get_vehicle_pos(dir_key, i)
+			var new_pos := _get_vehicle_pos(dir_key, i) + yv
 			var veh: Node3D = current[i]
 			veh.position = veh.position.lerp(new_pos, 0.15)
 
@@ -682,6 +730,159 @@ func _get_vehicle_pos(dir_key: String, index: int) -> Vector3:
 # ║  XE BĂNG QUA GIAO LỘ (thẳng qua + rẽ trái cong)             ║
 # ╚══════════════════════════════════════════════════════════════╝
 
+func _build_siren() -> void:
+	"""Tạo còi hụ tổng hợp real-time (không cần file audio)."""
+	_siren_player = AudioStreamPlayer.new()
+	var gen := AudioStreamGenerator.new()
+	gen.mix_rate = SIREN_RATE
+	gen.buffer_length = 0.15
+	_siren_player.stream = gen
+	_siren_player.volume_db = -6.0
+	add_child(_siren_player)
+
+func _update_siren(delta: float) -> void:
+	# Bật/tắt còi theo trạng thái ưu tiên
+	if _emergency_active and not _siren_on:
+		_siren_player.play()
+		_siren_pb = _siren_player.get_stream_playback()
+		_siren_on = true
+	elif not _emergency_active and _siren_on:
+		_siren_player.stop()
+		_siren_pb = null
+		_siren_on = false
+	if not _siren_on or _siren_pb == null:
+		return
+	# Đổ mẫu: còi 2 tông (700Hz ↔ 950Hz, đổi mỗi 0.5s)
+	var frames := _siren_pb.get_frames_available()
+	for i in range(frames):
+		_siren_t += 1.0 / SIREN_RATE
+		if _siren_t > 100.0:
+			_siren_t = 0.0
+		var freq := 700.0 if fmod(_siren_t, 1.0) < 0.5 else 950.0
+		_siren_phase += TAU * freq / SIREN_RATE
+		if _siren_phase > TAU:
+			_siren_phase -= TAU
+		var s := sin(_siren_phase) * 0.3
+		_siren_pb.push_frame(Vector2(s, s))
+
+func _spawn_emergency_vehicle(dir_key: String, kind: String = "ambulance") -> void:
+	"""Sinh 1 xe ưu tiên nổi bật băng qua giao lộ theo hướng ưu tiên."""
+	var pivot := Node3D.new()
+	if kind == "police":
+		pivot.name = "Police"
+		_attach_model(pivot, "police", CAR_SCALE * 1.15)
+	else:
+		pivot.name = "Ambulance"
+		_attach_model(pivot, "ambulance", TRUCK_SCALE * 1.4)
+	# Đèn hiệu trên nóc (quả cầu phát sáng to + đèn point mạnh) — nhấp nháy đỏ/xanh
+	var beacon := CSGSphere3D.new()
+	beacon.radius = 1.0
+	beacon.position = Vector3(0, 4.0, 0)
+	var bm := StandardMaterial3D.new()
+	bm.albedo_color = Color(1.0, 0.12, 0.12)
+	bm.emission_enabled = true
+	bm.emission = Color(1.0, 0.12, 0.12)
+	bm.emission_energy_multiplier = 16.0
+	bm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	beacon.material = bm
+	pivot.add_child(beacon)
+	var ol := OmniLight3D.new()
+	ol.light_color = Color(1.0, 0.15, 0.15)
+	ol.light_energy = 16.0
+	ol.omni_range = 30.0
+	ol.position = Vector3(0, 4.2, 0)
+	pivot.add_child(ol)
+	pivot.rotation_degrees.y = _dir_heading(dir_key)
+	add_child(pivot)
+	_ambulance_lights.append({"light": ol, "mesh": beacon, "kind": kind})
+	# Chạy dọc làn có né vật cản (thay vì bay theo đường cong)
+	_emergency_movers.append({"node": pivot, "dir": dir_key, "d": 0.0, "offset": 0.0})
+
+# ── Xe ưu tiên chạy dọc làn, né xe cản rồi về làn ──
+func _update_emergency_movers(delta: float) -> void:
+	var total := EMG_START - EMG_END   # tổng quãng đường
+	var still: Array = []
+	for m in _emergency_movers:
+		var node = m["node"]
+		if not is_instance_valid(node):
+			continue
+		m["d"] += EMG_SPEED * delta
+		if m["d"] >= total:
+			node.queue_free()
+			continue
+		var frac: float = m["d"] / total
+		var along := lerpf(EMG_START, EMG_END, frac)
+		var dir: String = m["dir"]
+		# Xe ưu tiên đi LỆCH TRÁI trong lòng đường (xe thường dạt phải nhường)
+		m["offset"] = lerpf(m["offset"], -EMG_DODGE, clampf(delta * 4.0, 0.0, 1.0))
+		node.position = _emg_pos(dir, along, m["offset"])
+	_emergency_movers = _emergency_movers.filter(func(x): return is_instance_valid(x["node"]))
+
+func _same_side(dir_key: String, emg_dir: String) -> bool:
+	"""dir_key có cùng trục+chiều với hướng ưu tiên (gồm cả làn rẽ trái)?"""
+	return dir_key == emg_dir or dir_key == emg_dir + "_LEFT"
+
+func _yield_vec(emg_dir: String) -> Vector3:
+	"""Vector dạt phải để xe thường nhường xe ưu tiên."""
+	match emg_dir:
+		"WE": return Vector3(0, 0, EMG_YIELD)
+		"EW": return Vector3(0, 0, -EMG_YIELD)
+		"SN": return Vector3(EMG_YIELD, 0, 0)
+		"NS": return Vector3(-EMG_YIELD, 0, 0)
+	return Vector3.ZERO
+
+func _emg_pos(dir_key: String, along: float, offset: float) -> Vector3:
+	var y := VEH_Y
+	match dir_key:
+		"SN": return Vector3(LANE_WIDTH + offset, y, along)
+		"NS": return Vector3(-LANE_WIDTH - offset, y, -along)
+		"WE": return Vector3(-along, y, LANE_WIDTH + offset)
+		"EW": return Vector3(along, y, -LANE_WIDTH - offset)
+	return Vector3(LANE_WIDTH + offset, y, along)
+
+func _emg_blocked(dir_key: String, node: Node3D) -> bool:
+	var cars: Array = _vehicle_nodes.get(dir_key, [])
+	var ap := node.position
+	for c in cars:
+		if not is_instance_valid(c):
+			continue
+		var cp: Vector3 = c.position
+		var ahead := false
+		var lat_close := false
+		match dir_key:
+			"SN": ahead = (ap.z - cp.z) > 1.0 and (ap.z - cp.z) < 16.0; lat_close = abs(ap.x - cp.x) < 3.5
+			"NS": ahead = (cp.z - ap.z) > 1.0 and (cp.z - ap.z) < 16.0; lat_close = abs(ap.x - cp.x) < 3.5
+			"WE": ahead = (cp.x - ap.x) > 1.0 and (cp.x - ap.x) < 16.0; lat_close = abs(ap.z - cp.z) < 3.5
+			"EW": ahead = (ap.x - cp.x) > 1.0 and (ap.x - cp.x) < 16.0; lat_close = abs(ap.z - cp.z) < 3.5
+		if ahead and lat_close:
+			return true
+	return false
+
+# Nhấp nháy đèn hiệu đỏ ↔ xanh (như đèn xe cấp cứu thật)
+func _update_beacons(delta: float) -> void:
+	_blink_t += delta
+	var phase_a := fmod(_blink_t, 0.4) < 0.2
+	var still: Array = []
+	for b in _ambulance_lights:
+		var light = b.get("light")
+		var mesh = b.get("mesh")
+		if not is_instance_valid(light) or not is_instance_valid(mesh):
+			continue
+		var kind := str(b.get("kind", "ambulance"))
+		var col: Color
+		if kind == "police":
+			col = Color(0.15, 0.4, 1.0) if phase_a else Color(0.95, 0.97, 1.0)   # xanh dương / trắng
+		else:
+			col = Color(1.0, 0.1, 0.1) if phase_a else Color(0.15, 0.35, 1.0)     # đỏ / xanh
+		light.light_color = col
+		light.light_energy = 18.0
+		var mat := mesh.material as StandardMaterial3D
+		if mat:
+			mat.albedo_color = col
+			mat.emission = col
+		still.append(b)
+	_ambulance_lights = still
+
 func _start_crossing(dir_key: String, node: Node3D) -> void:
 	var path := _get_cross_path(dir_key)
 	node.position = path[0]
@@ -693,6 +894,8 @@ func _start_crossing(dir_key: String, node: Node3D) -> void:
 func _update_crossing(delta: float) -> void:
 	var still: Array = []
 	for c in _crossing:
+		if not is_instance_valid(c.node):
+			continue
 		c.t += delta / c.dur
 		if c.t >= 1.0:
 			c.node.queue_free()
@@ -779,7 +982,7 @@ func _build_dashboard():
 	# ╔══════════════════════════════════════════════════════════════╗
 	# ║  TOP-LEFT: Clock + Fidelity + Phase                        ║
 	# ╚══════════════════════════════════════════════════════════════╝
-	var tl_panel: Panel = _make_panel.call(canvas, Vector2(10, 10), Vector2(340, 128))
+	var tl_panel: Panel = _make_panel.call(canvas, Vector2(10, 10), Vector2(340, 150))
 	var tl_vbox: VBoxContainer = _make_vbox.call(tl_panel, 10.0)
 
 	_add_label(tl_vbox, "title", "🚦 DIGITAL TWIN L4 PRO", 14, Color(0.6, 0.8, 1.0))
@@ -787,6 +990,7 @@ func _build_dashboard():
 	_add_label(tl_vbox, "fidelity", "🎯 Fidelity: -- %", 12, Color.WHITE)
 	_add_label(tl_vbox, "phase_info", "💡 Pha: -- | Còn: --s", 12, Color(0.8, 0.9, 1.0))
 	_add_label(tl_vbox, "weather_info", "☀️ Tạnh | 🌤️ Ngày", 12, Color(0.75, 0.85, 1.0))
+	_add_label(tl_vbox, "emergency_info", "", 12, Color(1.0, 0.3, 0.3))
 	
 	# ╔══════════════════════════════════════════════════════════════╗
 	# ║  TOP-RIGHT: Density 8 directions                           ║
@@ -831,7 +1035,7 @@ func _build_dashboard():
 	# ╔══════════════════════════════════════════════════════════════╗
 	# ║  BOTTOM-RIGHT: AI Optimizer + Controls                     ║
 	# ╚══════════════════════════════════════════════════════════════╝
-	var br_panel: Panel = _make_panel.call(canvas, Vector2(1920 - 380 - 10, 1080 - 280 - 10), Vector2(380, 280))
+	var br_panel: Panel = _make_panel.call(canvas, Vector2(1920 - 380 - 10, 1080 - 320 - 10), Vector2(380, 320))
 	# Anchor bottom-right
 	br_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
 	br_panel.set_anchor(SIDE_LEFT, 1.0)
@@ -840,7 +1044,7 @@ func _build_dashboard():
 	br_panel.set_anchor(SIDE_BOTTOM, 1.0)
 	br_panel.offset_left = -390
 	br_panel.offset_right = -10
-	br_panel.offset_top = -290
+	br_panel.offset_top = -330
 	br_panel.offset_bottom = -10
 	var br_vbox: VBoxContainer = _make_vbox.call(br_panel, 10.0)
 	
@@ -890,8 +1094,159 @@ func _build_dashboard():
 	_btn_weather.pressed.connect(_on_weather_pressed)
 	ctrl_hbox.add_child(_btn_weather)
 
+	# Hàng nút xe cấp cứu
+	var emg_hbox := HBoxContainer.new()
+	emg_hbox.add_theme_constant_override("separation", 5)
+	br_vbox.add_child(emg_hbox)
+	_btn_emergency = _make_ctrl_button("🚑 CẤP CỨU", Vector2(140, 34))
+	_btn_emergency.pressed.connect(_on_emergency_pressed)
+	emg_hbox.add_child(_btn_emergency)
+
+	_btn_police = _make_ctrl_button("🚓 ĐOÀN CÔNG AN", Vector2(190, 34))
+	_btn_police.pressed.connect(_on_police_pressed)
+	emg_hbox.add_child(_btn_police)
+
 	# Tô sáng speed mặc định (1x)
 	_set_active_speed(1)
+
+	# Panel so sánh
+	_build_compare_panel(canvas)
+
+# ── Panel SO SÁNH 3 chế độ (neo giữa trên) ──
+func _build_compare_panel(canvas: CanvasLayer):
+	var p := Panel.new()
+	p.name = "ComparePanel"
+	var s := StyleBoxFlat.new()
+	s.bg_color = Color(0.03, 0.04, 0.08, 0.9)
+	s.border_color = Color(0.3, 0.5, 0.8, 0.6)
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(8)
+	p.add_theme_stylebox_override("panel", s)
+	# Góc TRÁI TRÊN, ngay dưới panel đồng hồ — không đè lên đường
+	p.offset_left = 10; p.offset_right = 470
+	p.offset_top = 170; p.offset_bottom = 292
+	canvas.add_child(p)
+
+	var vb := VBoxContainer.new()
+	vb.position = Vector2(12, 8)
+	vb.custom_minimum_size = Vector2(436, 0)
+	vb.add_theme_constant_override("separation", 3)
+	p.add_child(vb)
+
+	_add_label(vb, "cmp_title", "⚖️ SO SÁNH ĐIỀU KHIỂN — xe chờ TB (PCU) · thông lượng (PCU/ph)", 12, Color(0.75, 0.85, 1.0))
+
+	var grid := GridContainer.new()
+	grid.columns = 3
+	grid.add_theme_constant_override("h_separation", 40)
+	grid.add_theme_constant_override("v_separation", 2)
+	vb.add_child(grid)
+
+	# Header
+	_grid_cell(grid, "hdr_mode", "Chế độ", 11, Color(0.6, 0.6, 0.7))
+	_grid_cell(grid, "hdr_q", "Xe chờ", 11, Color(0.6, 0.6, 0.7))
+	_grid_cell(grid, "hdr_t", "Thông lượng", 11, Color(0.6, 0.6, 0.7))
+	# Rows
+	var rows := [["fixed", "Đèn cố định"], ["actuated", "Actuated (cảm biến)"], ["ai", "AI (của mình)"]]
+	for r in rows:
+		var key: String = r[0]
+		_grid_cell(grid, "cmp_" + key + "_name", r[1], 12, CMP_COLORS[key])
+		_grid_cell(grid, "cmp_" + key + "_q", "--", 12, Color.WHITE)
+		_grid_cell(grid, "cmp_" + key + "_t", "--", 12, Color.WHITE)
+
+	_add_label(vb, "cmp_verdict", "AI vs đèn cố định: --", 12, Color(0.4, 0.95, 0.5))
+
+func _grid_cell(grid: GridContainer, key: String, text: String, size: int, color: Color):
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.add_theme_font_size_override("font_size", size)
+	lbl.add_theme_color_override("font_color", color)
+	grid.add_child(lbl)
+	_labels[key] = lbl
+
+# ── Panel BIỂU ĐỒ 24h (neo giữa dưới) ──
+func _build_chart_panel(canvas: CanvasLayer):
+	var p := Panel.new()
+	p.name = "ChartPanel"
+	var s := StyleBoxFlat.new()
+	s.bg_color = Color(0.03, 0.04, 0.08, 0.9)
+	s.border_color = Color(0.3, 0.5, 0.8, 0.6)
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(8)
+	p.add_theme_stylebox_override("panel", s)
+	# Góc TRÁI DƯỚI, phía trên panel KPI — không đè lên đường
+	p.anchor_top = 1.0; p.anchor_bottom = 1.0
+	p.offset_left = 10; p.offset_right = 470
+	p.offset_top = -346; p.offset_bottom = -148
+	canvas.add_child(p)
+
+	_add_label_at(p, "chart_title", "📈 Xe chờ TB theo giờ (thấp = tốt)", 12, Color(0.75, 0.85, 1.0), Vector2(12, 8))
+
+	# Legend (hàng 2)
+	var lx := 40.0
+	for item in [["fixed", "Cố định"], ["actuated", "Actuated"], ["ai", "AI"]]:
+		var k: String = item[0]
+		var dot := ColorRect.new()
+		dot.color = CMP_COLORS[k]
+		dot.size = Vector2(11, 11)
+		dot.position = Vector2(lx, 31)
+		p.add_child(dot)
+		_add_label_at(p, "leg_" + k, item[1], 10, CMP_COLORS[k], Vector2(lx + 15, 28))
+		lx += 135.0
+
+	# Gridline ngang (mờ) tại 30/60/90 + nhãn Y
+	for gv in [0, 30, 60, 90]:
+		var gy := CHART_Y_TOP + CHART_H - float(gv) / CHART_MAXQ * CHART_H
+		var grid := Line2D.new()
+		grid.width = 1.0
+		grid.default_color = Color(0.25, 0.28, 0.35) if gv > 0 else Color(0.45, 0.5, 0.6)
+		grid.points = PackedVector2Array([Vector2(CHART_X0, gy), Vector2(CHART_X0 + CHART_W, gy)])
+		p.add_child(grid)
+		_add_label_at(p, "cy_" + str(gv), str(gv), 9, Color(0.6, 0.6, 0.7), Vector2(16, gy - 7))
+
+	# Trục Y dọc
+	var axis := Line2D.new()
+	axis.width = 1.0
+	axis.default_color = Color(0.45, 0.5, 0.6)
+	axis.points = PackedVector2Array([Vector2(CHART_X0, CHART_Y_TOP), Vector2(CHART_X0, CHART_Y_TOP + CHART_H)])
+	p.add_child(axis)
+
+	# Nhãn trục X (0h,6,12,18,24)
+	for hx in [0, 6, 12, 18, 24]:
+		var px := CHART_X0 + float(hx) / 24.0 * CHART_W
+		_add_label_at(p, "cx_" + str(hx), str(hx) + "h", 9, Color(0.6, 0.6, 0.7), Vector2(px - 6, CHART_Y_TOP + CHART_H + 3))
+
+	# 3 đường dữ liệu
+	for k in ["fixed", "actuated", "ai"]:
+		var ln := Line2D.new()
+		ln.width = 2.0
+		ln.default_color = CMP_COLORS[k]
+		ln.joint_mode = Line2D.LINE_JOINT_ROUND
+		p.add_child(ln)
+		_chart_lines[k] = ln
+
+func _add_label_at(parent: Control, key: String, text: String, size: int, color: Color, pos: Vector2):
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.position = pos
+	lbl.add_theme_font_size_override("font_size", size)
+	lbl.add_theme_color_override("font_color", color)
+	parent.add_child(lbl)
+	_labels[key] = lbl
+
+func _chart_point(hour: float, val: float) -> Vector2:
+	var x := CHART_X0 + clampf(hour / 24.0, 0.0, 1.0) * CHART_W
+	var y := CHART_Y_TOP + CHART_H - clampf(val / CHART_MAXQ, 0.0, 1.0) * CHART_H
+	return Vector2(x, y)
+
+func _redraw_chart():
+	for k in ["fixed", "actuated", "ai"]:
+		var data: Dictionary = _chart_data[k]
+		var hours := data.keys()
+		hours.sort()
+		var pts := PackedVector2Array()
+		for h in hours:
+			pts.append(_chart_point(float(h), data[h]))
+		_chart_lines[k].points = pts
 
 # ── Tạo nút có style rõ (normal / hover / pressed / focus) ──
 func _make_ctrl_button(text: String, size: Vector2) -> Button:
@@ -1108,6 +1463,46 @@ func update_twin_state(data: Dictionary):
 		var dn := "🌙 Đêm" if is_night else "🌤️ Ngày"
 		_labels["weather_info"].text = wx + " | " + dn
 
+	# Xe ưu tiên (cấp cứu)
+	if data.has("emergency") and _labels.has("emergency_info"):
+		var em: Dictionary = data["emergency"]
+		_emergency_active = em.get("active", false)
+		_emergency_dir = str(em.get("direction", "NS"))
+		var kind := str(em.get("kind", "ambulance"))
+		# Sườn lên: bắt đầu đợt mới → đặt số xe cần sinh (cấp cứu 1, công an cả đoàn)
+		if _emergency_active and not _emergency_prev:
+			_convoy_kind = kind
+			_convoy_remaining = 1 if kind == "ambulance" else 5
+			_convoy_timer = 0.8  # sinh xe đầu ngay
+		_emergency_prev = _emergency_active
+		if _emergency_active:
+			var dir_nm: String = DIR_NAMES.get(_emergency_dir, _emergency_dir)
+			var tag := "🚑 CẤP CỨU" if kind == "ambulance" else "🚓 ĐOÀN CÔNG AN"
+			_labels["emergency_info"].text = tag + " ưu tiên: " + dir_nm + " (" + str(em.get("seconds_left", 0)) + "s)"
+			_set_button_active(_btn_emergency, kind == "ambulance")
+			_set_button_active(_btn_police, kind == "police")
+		else:
+			_labels["emergency_info"].text = ""
+			_set_button_active(_btn_emergency, false)
+			_set_button_active(_btn_police, false)
+
+	# So sánh baseline
+	if data.has("baselines"):
+		var bl: Dictionary = data["baselines"]
+		for k in ["fixed", "actuated", "ai"]:
+			if bl.has(k):
+				var q: float = bl[k].get("avgQueue", 0.0)
+				var t: float = bl[k].get("throughput", 0.0)
+				if _labels.has("cmp_" + k + "_q"): _labels["cmp_" + k + "_q"].text = str(snapped(q, 0.1))
+				if _labels.has("cmp_" + k + "_t"): _labels["cmp_" + k + "_t"].text = str(snapped(t, 0.1))
+		var qf: float = bl.get("fixed", {}).get("avgQueue", 0.0)
+		var qai: float = bl.get("ai", {}).get("avgQueue", 0.0)
+		if _labels.has("cmp_verdict") and qf > 0.0:
+			var pct: float = (qf - qai) / qf * 100.0
+			var better := pct >= 0.0
+			_labels["cmp_verdict"].text = "AI vs đèn cố định: " + ("↓ giảm " if better else "↑ tăng ") + str(snapped(abs(pct), 0.1)) + "% xe chờ"
+			_labels["cmp_verdict"].add_theme_color_override("font_color", Color(0.4, 0.95, 0.5) if better else Color(0.95, 0.55, 0.35))
+
 func _density_color(d: float) -> Color:
 	if d <= 0.15: return Color(0.2, 0.9, 0.4)
 	elif d <= 0.35: return Color(0.5, 0.95, 0.2)
@@ -1145,3 +1540,15 @@ func _on_toggle_auto_pressed():
 func _on_weather_pressed():
 	var net := get_node_or_null("Network")
 	if net: net.send_toggle_weather()
+
+func _on_emergency_pressed():
+	var net := get_node_or_null("Network")
+	if net:
+		net.send_emergency("SN", "ambulance")
+		_flash_button(_btn_emergency, "🚑 ƯU TIÊN...")
+
+func _on_police_pressed():
+	var net := get_node_or_null("Network")
+	if net:
+		net.send_emergency("WE", "police")   # đoàn công an đi ngang trái → phải
+		_flash_button(_btn_police, "🚓 ĐANG QUA...")

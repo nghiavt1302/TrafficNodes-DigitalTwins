@@ -96,6 +96,11 @@ func send_toggle_weather():
 	_send({"action": "TOGGLE_WEATHER"})
 	print("[NETWORK] 🌦️ TOGGLE_WEATHER")
 
+func send_emergency(direction: String = "NS", kind: String = "ambulance"):
+	"""Kích hoạt ưu tiên xe ưu tiên (preemption đèn xanh). kind: ambulance | police."""
+	_send({"action": "EMERGENCY", "direction": direction, "kind": kind})
+	print("[NETWORK] 🚨 EMERGENCY: ", direction, " ", kind)
+
 func send_pause():
 	_send({"action": "PAUSE"})
 

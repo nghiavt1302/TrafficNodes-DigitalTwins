@@ -159,7 +159,7 @@ SENSOR_NOISE_STD: float = 0.03
 SENSOR_DROPOUT_RATE: float = 0.02
 
 # ── SUMO Integration ──
-SUMO_ENABLED: bool = True     # True = dùng SUMO, False = fallback mô phỏng nội bộ
+SUMO_ENABLED: bool = False    # True = dùng SUMO, False = fallback mô phỏng nội bộ (ổn định hơn)
 SUMO_CFG_PATH: str = "sumo/intersection.sumocfg"
 SUMO_GUI: bool = False        # True = mở sumo-gui, False = headless
 SUMO_STEP_LENGTH: float = 1.0 # Bước SUMO (giây)

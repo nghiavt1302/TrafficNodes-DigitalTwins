@@ -42,6 +42,7 @@ from config import (
     MAX_GREEN_TIME,
     MAX_GREEN_TIME_LEFT,
     WEIGHTED_PCE,
+    DEFAULT_GREEN_TIMES,
 )
 from core.utils import get_hour_multiplier, get_queue_capacity
 
@@ -245,7 +246,17 @@ def optimize(
         except Exception:
             continue
 
-    # Convert result
+    # ── Ràng buộc TỔNG chu kỳ (không để optimizer phình chu kỳ) ──
+    # AI thắng nhờ PHÂN BỔ đúng, không nhờ kéo dài đèn. Tổng xanh mục tiêu
+    # = ngân sách mặc định × cycle_scale (đêm ngắn, cao điểm dài tối đa = mặc định).
+    target_total = sum(DEFAULT_GREEN_TIMES.values()) * cycle_scale
+    lows = [bounds_info[i][0] for i in range(len(PHASE_IDS))]
+    s_x = sum(best_x)
+    if s_x > 1e-6:
+        scale = target_total / s_x
+        best_x = [best_x[i] * scale for i in range(len(PHASE_IDS))]
+
+    # Convert result (kẹp min/max theo pha)
     best_candidate: dict[str, int] = {}
     for i, p in enumerate(PHASE_IDS):
         lo, hi = bounds_info[i]
