@@ -53,3 +53,5 @@ digital_twins.apple-touch-icon.*
 digital_twins.icon.*
 digital_twins.png*
 digital_twins.*.import
+
+kpi_log.csv
