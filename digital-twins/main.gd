@@ -557,10 +557,10 @@ func _update_vehicles():
 
 		# Xe rời hàng do nhịp thả (_release_green_vehicles), không xử lý ở đây.
 		# Trượt xe còn lại tiến lên vị trí mới (lerp mượt mà)
-		# Nếu có xe ưu tiên trên cùng trục → dạt sang phải nhường đường
+		# Nếu có xe ưu tiên trên cùng trục → tất cả xe cùng đường dạt phải và dừng
 		var yv := Vector3.ZERO
-		if _emergency_active and _same_side(dir_key, _emergency_dir):
-			yv = _yield_vec(_emergency_dir)
+		if _emergency_active and _same_road(dir_key, _emergency_dir):
+			yv = _yield_vec_for_dir(dir_key)
 		for i in range(current.size()):
 			var new_pos := _get_vehicle_pos(dir_key, i) + yv
 			var veh: Node3D = current[i]
@@ -575,6 +575,9 @@ func _release_green_vehicles(delta: float) -> void:
 	_release_timer = 0.0
 	for dir_key in ALL_DIRS:
 		if traffic_data[dir_key].get("light", "DO") != "XANH":
+			continue
+		# Xe cùng đường với đoàn ưu tiên phải tấp lề, không được băng qua
+		if _emergency_active and _same_road(dir_key, _emergency_dir):
 			continue
 		var current: Array = _vehicle_nodes[dir_key]
 		if current.size() > 0:
@@ -822,6 +825,12 @@ func _same_side(dir_key: String, emg_dir: String) -> bool:
 	"""dir_key có cùng trục+chiều với hướng ưu tiên (gồm cả làn rẽ trái)?"""
 	return dir_key == emg_dir or dir_key == emg_dir + "_LEFT"
 
+func _same_road(dir_key: String, emg_dir: String) -> bool:
+	"""Cùng trục đường (cả 2 chiều): NS↔SN hoặc EW↔WE, kể cả làn rẽ trái."""
+	var AXIS := {"NS": "NS_SN", "SN": "NS_SN", "NS_LEFT": "NS_SN", "SN_LEFT": "NS_SN",
+				 "EW": "EW_WE", "WE": "EW_WE", "EW_LEFT": "EW_WE", "WE_LEFT": "EW_WE"}
+	return AXIS.get(dir_key, "A") == AXIS.get(emg_dir, "B")
+
 func _yield_vec(emg_dir: String) -> Vector3:
 	"""Vector dạt phải để xe thường nhường xe ưu tiên."""
 	match emg_dir:
@@ -830,6 +839,11 @@ func _yield_vec(emg_dir: String) -> Vector3:
 		"SN": return Vector3(EMG_YIELD, 0, 0)
 		"NS": return Vector3(-EMG_YIELD, 0, 0)
 	return Vector3.ZERO
+
+func _yield_vec_for_dir(dir_key: String) -> Vector3:
+	"""Dạt phải theo hướng đi của chính xe đó (không phụ thuộc hướng xe ưu tiên)."""
+	var base := dir_key.replace("_LEFT", "")
+	return _yield_vec(base)
 
 func _emg_pos(dir_key: String, along: float, offset: float) -> Vector3:
 	var y := VEH_Y
