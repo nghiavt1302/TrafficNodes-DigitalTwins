@@ -186,10 +186,10 @@ class SumoPhysicalTwin(PhysicalTwinBase):
 
             self._traci = traci
             self._connected = True
-            logger.info(f"🚗 SUMO started: {cfg_path}")
+            logger.info(f"SUMO started: {cfg_path}")
 
         except Exception as e:
-            logger.warning(f"⚠️ Cannot start SUMO: {e}. Will use fallback.")
+            logger.warning(f"Cannot start SUMO: {e}. Will use fallback.")
             self._connected = False
 
     def tick(
@@ -301,7 +301,7 @@ class SumoPhysicalTwin(PhysicalTwinBase):
             except Exception:
                 pass
             self._connected = False
-            logger.info("🛑 SUMO closed.")
+            logger.info("SUMO closed.")
 
     @property
     def is_connected(self) -> bool:
@@ -442,14 +442,14 @@ def create_physical_twin(use_sumo: bool = True) -> PhysicalTwinBase:
         try:
             twin = SumoPhysicalTwin()
             if twin.is_connected:
-                logger.info("✅ Using SUMO Physical Twin (microscopic simulation)")
+                logger.info("Using SUMO Physical Twin (microscopic simulation)")
                 return twin
             else:
-                logger.info("⚠️ SUMO failed to connect, using Simulated Physical Twin")
+                logger.info("SUMO failed to connect, using Simulated Physical Twin")
                 return SimulatedPhysicalTwin()
         except Exception as e:
-            logger.warning(f"⚠️ SUMO unavailable ({e}), using Simulated Physical Twin")
+            logger.warning(f"SUMO unavailable ({e}), using Simulated Physical Twin")
             return SimulatedPhysicalTwin()
     else:
-        logger.info("📦 Using Simulated Physical Twin (internal model)")
+        logger.info("Using Simulated Physical Twin (internal model)")
         return SimulatedPhysicalTwin()

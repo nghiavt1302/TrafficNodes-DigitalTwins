@@ -194,7 +194,7 @@ class KalmanForecaster:
 
 def pretrain_forecaster(forecaster: KalmanForecaster, iterations: int = 200) -> None:
     """Light Pre-training: 200 iterations warm-up cho 8 hướng."""
-    logger.info(f"🧠 Light Pre-training Kalman 2D ({iterations} iters, 8 directions)...")
+    logger.info(f"Light Pre-training Kalman 2D ({iterations} iters, 8 directions)...")
 
     from core.utils import get_hour_multiplier
     from config import BASE_DENSITY, ARRIVAL_RATE_SCALE, WEIGHTED_PCE
@@ -211,6 +211,6 @@ def pretrain_forecaster(forecaster: KalmanForecaster, iterations: int = 200) -> 
         forecaster.update(fake_measurements)
 
     logger.info(
-        f"✅ Pre-training done! Updates: {forecaster.update_count} | "
+        f"Pre-training done! Updates: {forecaster.update_count} | "
         f"Converged: {forecaster.is_converged}"
     )

@@ -54,7 +54,7 @@ class SimulationClock:
         self._paused: bool = False
 
         logger.info(
-            f"🕐 SimClock khởi tạo: {start_hour:02d}:{start_minute:02d}, "
+            f"SimClock khởi tạo: {start_hour:02d}:{start_minute:02d}, "
             f"speed={self._speed}x"
         )
 
@@ -146,7 +146,7 @@ class SimulationClock:
         old_speed = self._speed
         self._speed = max(0.1, min(3600.0, multiplier))
         logger.info(
-            f"🕐 SimClock speed: {old_speed}x → {self._speed}x "
+            f"SimClock speed: {old_speed}x → {self._speed}x "
             f"(tại {self.time_str})"
         )
 
@@ -172,19 +172,19 @@ class SimulationClock:
 
         self._total_seconds += jump
         logger.info(
-            f"⏭️  SimClock JUMP → {hour:02d}:{minute:02d} "
+            f" SimClock JUMP → {hour:02d}:{minute:02d} "
             f"(nhảy {jump:.0f}s, day {self.day})"
         )
 
     def pause(self) -> None:
         """Tạm dừng đồng hồ mô phỏng."""
         self._paused = True
-        logger.info(f"⏸️  SimClock PAUSED tại {self.time_str}")
+        logger.info(f"SimClock PAUSED tại {self.time_str}")
 
     def resume(self) -> None:
         """Tiếp tục đồng hồ mô phỏng."""
         self._paused = False
-        logger.info(f"▶️  SimClock RESUMED tại {self.time_str}")
+        logger.info(f"SimClock RESUMED tại {self.time_str}")
 
     def to_dict(self) -> dict:
         """Serialize trạng thái clock → JSON-friendly dict."""

@@ -110,7 +110,7 @@ def init_kpi_csv() -> None:
         with open(_CSV_PATH, "w", encoding="utf-8", newline="") as f:
             f.write(_CSV_HEADER)
     except Exception as e:
-        logger.warning(f"⚠️ Không mở được CSV: {e}")
+        logger.warning(f"Không mở được CSV: {e}")
 
 
 def append_kpi_row(payload: dict) -> None:
@@ -126,7 +126,7 @@ def append_kpi_row(payload: dict) -> None:
         with open(_CSV_PATH, "a", encoding="utf-8", newline="") as f:
             f.write(row)
     except Exception as e:
-        logger.warning(f"⚠️ Lỗi ghi CSV: {e}")
+        logger.warning(f"Lỗi ghi CSV: {e}")
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -456,7 +456,7 @@ class IntersectionState:
 
             if self.next_priority_phase and self.next_priority_phase != current_phase:
                 selected_phase = self.next_priority_phase
-                logger.info(f"⚡ OVERRIDE: Chuyển sang pha ưu tiên {selected_phase}")
+                logger.info(f"OVERRIDE: Chuyển sang pha ưu tiên {selected_phase}")
                 self.next_priority_phase = None
             else:
                 # Round-robin 4 pha
@@ -528,7 +528,7 @@ class IntersectionState:
                 self.green_times[phase_id] = max(min_g, min(max_g, new_green_times[phase_id]))
 
         logger.info(
-            "🔄 TIMING UPDATE: " +
+            " TIMING UPDATE: " +
             " | ".join(f"{p}={self.green_times[p]}s" for p in PHASE_IDS)
         )
 
@@ -590,7 +590,7 @@ class IntersectionState:
             self.emergency["ticks_left"] -= 1
             if self.emergency["ticks_left"] <= 0:
                 self.emergency["active"] = False
-                logger.info("🚑 Hết ưu tiên cấp cứu — trả về điều khiển bình thường")
+                logger.info("Hết ưu tiên cấp cứu — trả về điều khiển bình thường")
         else:
             # 1b. Actuated Green Cutoff (bình thường)
             min_green = self._get_min_green_for_current_phase()
@@ -601,7 +601,7 @@ class IntersectionState:
                 )
                 if all_clear:
                     logger.info(
-                        f"✂️ ACTUATED CUTOFF: Pha {self.current_phase_id}, "
+                        f"ACTUATED CUTOFF: Pha {self.current_phase_id}, "
                         f"cắt sớm sau {self.phase_timer:.0f}s"
                     )
                     self._advance_phase()
@@ -663,7 +663,7 @@ class IntersectionState:
                     result.improvement > AUTO_APPLY_MIN_IMPROVEMENT):
                 self.apply_new_timing(result.green_times)
                 logger.info(
-                    f"🤖 AUTO-APPLY: "
+                    f"AUTO-APPLY: "
                     + " | ".join(f"{p}={result.green_times[p]}s" for p in PHASE_IDS)
                     + f" (+{result.improvement:.1f}%)"
                 )
@@ -751,12 +751,12 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
         self.active_connections.append(websocket)
-        logger.info(f"🔗 Client kết nối! Tổng: {len(self.active_connections)}")
+        logger.info(f"Client kết nối! Tổng: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket) -> None:
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
-        logger.info(f"❌ Client ngắt. Còn: {len(self.active_connections)}")
+        logger.info(f"Client ngắt. Còn: {len(self.active_connections)}")
 
     async def broadcast(self, message: str) -> None:
         disconnected: list[WebSocket] = []
@@ -779,28 +779,28 @@ manager = ConnectionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 Khởi động Digital Twin Level 4 Pro v5.0")
+    logger.info("Khởi động Digital Twin Level 4 Pro v5.0")
     logger.info("=" * 60)
-    logger.info("  🏗️  Physical Twin ↔ Digital Twin (ISO 23247)")
-    logger.info("  🔄 4 pha NEMA (Leading Left Turn)")
-    logger.info("  🏍️  PCE xe máy VN: 0.25 PCU (mix: 65% moto)")
-    logger.info(f"  🕐 SimClock: {SIM_START_HOUR:02d}:{SIM_START_MINUTE:02d}, speed={SIM_SPEED_MULTIPLIER}x")
-    logger.info(f"  🤖 Auto-apply AI: {'ON' if AUTO_APPLY_ENABLED else 'OFF'}")
-    logger.info(f"  🚗 SUMO: {'ENABLED' if SUMO_ENABLED else 'DISABLED (fallback)'}")
+    logger.info("Physical Twin ↔ Digital Twin (ISO 23247)")
+    logger.info("4 pha NEMA (Leading Left Turn)")
+    logger.info("PCE xe máy VN: 0.25 PCU (mix: 65% moto)")
+    logger.info(f"SimClock: {SIM_START_HOUR:02d}:{SIM_START_MINUTE:02d}, speed={SIM_SPEED_MULTIPLIER}x")
+    logger.info(f"Auto-apply AI: {'ON' if AUTO_APPLY_ENABLED else 'OFF'}")
+    logger.info(f"SUMO: {'ENABLED' if SUMO_ENABLED else 'DISABLED (fallback)'}")
     logger.info("=" * 60)
 
     # Pre-training Kalman
-    logger.info("📚 Pre-training Kalman 2D (8 hướng)...")
+    logger.info("Pre-training Kalman 2D (8 hướng)...")
     pretrain_forecaster(state.forecaster)
-    logger.info("✅ Kalman Filter 2D sẵn sàng!")
+    logger.info("Kalman Filter 2D sẵn sàng!")
 
     # Khởi tạo file log KPI
     init_kpi_csv()
-    logger.info(f"📄 KPI log: {_CSV_PATH}")
+    logger.info(f"KPI log: {_CSV_PATH}")
 
     # Simulation loop
     simulation_task = asyncio.create_task(_simulation_loop())
-    logger.info(f"🌐 WebSocket: ws://{HOST}:{PORT}/traffic-ws")
+    logger.info(f"WebSocket: ws://{HOST}:{PORT}/traffic-ws")
 
     yield
 
@@ -808,7 +808,7 @@ async def lifespan(app: FastAPI):
     # Cleanup SUMO
     if hasattr(state.physical_twin, 'close'):
         state.physical_twin.close()
-    logger.info("🛑 Server đã dừng.")
+    logger.info("Server đã dừng.")
 
 
 app = FastAPI(
@@ -835,7 +835,7 @@ app.add_middleware(
 # ╚══════════════════════════════════════════════════════════════╝
 
 async def _simulation_loop() -> None:
-    logger.info("▶️  Simulation loop bắt đầu")
+    logger.info("Simulation loop bắt đầu")
 
     while True:
         try:
@@ -856,8 +856,8 @@ async def _simulation_loop() -> None:
                     ) / len(THROUGH_DIRECTIONS)
                     gt = state.green_times
                     logger.info(
-                        f"📊 #{state.tick_count:>6} | "
-                        f"⏰ {state.sim_clock.time_str} | "
+                        f"#{state.tick_count:>6} | "
+                        f"{state.sim_clock.time_str} | "
                         f"Pha: {state.phase:<12} | "
                         f"TB: {avg_d:.3f} | "
                         f"Đèn: {' '.join(f'{p}={gt[p]}s' for p in PHASE_IDS)} | "
@@ -871,7 +871,7 @@ async def _simulation_loop() -> None:
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"❗ Lỗi simulation: {e}")
+            logger.error(f"Lỗi simulation: {e}")
             await asyncio.sleep(1.0)
 
 
@@ -943,7 +943,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         state.weather = (
                             WEATHER_RAIN if state.weather == WEATHER_CLEAR else WEATHER_CLEAR
                         )
-                    logger.info(f"🌦️ WEATHER → {state.weather.upper()}")
+                    logger.info(f"WEATHER → {state.weather.upper()}")
                     ack = json.dumps({
                         "ack": True, "action": "TOGGLE_WEATHER",
                         "weather": state.weather,
@@ -968,7 +968,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     secs = int(message.get("seconds", 5))
                     async with state.lock:
                         state.emergency = {"active": True, "direction": direction, "ticks_left": secs, "kind": kind}
-                    logger.info(f"🚨 ƯU TIÊN [{kind}]: hướng {direction} trong {secs}s")
+                    logger.info(f"ƯU TIÊN [{kind}]: hướng {direction} trong {secs}s")
                     ack = json.dumps({
                         "ack": True, "action": "EMERGENCY", "direction": direction, "kind": kind,
                     })
@@ -980,15 +980,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     state.sim_clock.resume()
 
                 else:
-                    logger.warning(f"⚠️ Unknown action: {action}")
+                    logger.warning(f"Unknown action: {action}")
 
             except json.JSONDecodeError:
-                logger.warning(f"⚠️ Invalid JSON: {raw_data[:100]}")
+                logger.warning(f"Invalid JSON: {raw_data[:100]}")
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
-        logger.error(f"❗ WebSocket error: {e}")
+        logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)
 
 
@@ -1056,9 +1056,9 @@ if __name__ == "__main__":
     import uvicorn
 
     logger.info("=" * 60)
-    logger.info("  🚦 DIGITAL TWIN LEVEL 4 PRO — PRESCRIPTIVE TWIN")
-    logger.info(f"  📡 Smart Traffic Intersection Backend v{VERSION}")
-    logger.info("  🏗️  SUMO + 4-Phase NEMA + PCE + Auto-Apply AI")
+    logger.info("DIGITAL TWIN LEVEL 4 PRO — PRESCRIPTIVE TWIN")
+    logger.info(f"Smart Traffic Intersection Backend v{VERSION}")
+    logger.info("SUMO + 4-Phase NEMA + PCE + Auto-Apply AI")
     logger.info("=" * 60)
 
     uvicorn.run(
